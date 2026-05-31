@@ -44,8 +44,15 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	return Config{
 		Token:      token,
-		ListenAddr: DefaultListenAddr,
-		MsbPath:    DefaultMsbPath,
-		DataDir:    DefaultDataDir,
+		ListenAddr: orDefault(getenv("MSB_MANAGER_LISTEN_ADDR"), DefaultListenAddr),
+		MsbPath:    orDefault(getenv("MSB_MANAGER_MSB_PATH"), DefaultMsbPath),
+		DataDir:    orDefault(getenv("MSB_MANAGER_DATA_DIR"), DefaultDataDir),
 	}, nil
+}
+
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }
