@@ -67,6 +67,6 @@ v1 is a **single trust domain** — any valid bearer token has full access to ev
 
 The stateless model rests on three unverified microsandbox behaviours. None block the design; each is a one-command check to do before building on it:
 
-1. **Does `msb inspect --format json` echo volume mounts and env?** If mounts are surfaced, project membership and the one-VM-per-volume check are derivable from microsandbox state (fully stateless). If not, msb-manager needs minimal server-owned tracking. Same question for env (affects whether a sandbox's create-time env is readable later).
+1. **Does `msb inspect --format json` echo volume mounts and env?** ⏳ *Partially answered (msb v0.5.2, 2026-05-31).* Both are surfaced: `config.env` as `[key, value]` tuples and `config.mounts` as objects (`guest`, `type`, `readonly`, `size_mib`). Fixtures captured at `internal/msb/testdata/`. **Still open:** the only mount observed was an auto `Tmpfs` at `/tmp`, which carries **no source/name** — so it's not yet confirmed that a *named volume*'s source is surfaced (the field the one-VM-per-volume check needs). Capture an `inspect` fixture for a sandbox with a named volume to close this; if the source isn't there, msb-manager needs minimal server-owned volume tracking.
 2. **Is volume `--size` sparse/thin?** Create a 10G volume, check actual host disk usage. Determines whether quotas can be over-committed (see ADR-0004).
 3. **Is `msb` safe under concurrent invocation?** If not, msb-manager must serialise mutating commands (create/start/stop/rm).
