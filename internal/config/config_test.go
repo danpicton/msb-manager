@@ -38,3 +38,25 @@ func TestLoadAppliesDefaults(t *testing.T) {
 		t.Error("DataDir default = empty, want a non-empty path")
 	}
 }
+
+func TestLoadHonoursOverrides(t *testing.T) {
+	cfg, err := Load(envFunc(map[string]string{
+		"MSB_MANAGER_TOKEN":       "s3cret",
+		"MSB_MANAGER_LISTEN_ADDR": "127.0.0.1:9999",
+		"MSB_MANAGER_MSB_PATH":    "/opt/microsandbox/bin/msb",
+		"MSB_MANAGER_DATA_DIR":    "/srv/msb-manager",
+	}))
+	if err != nil {
+		t.Fatalf("Load with overrides: unexpected error: %v", err)
+	}
+
+	if cfg.ListenAddr != "127.0.0.1:9999" {
+		t.Errorf("ListenAddr = %q, want override %q", cfg.ListenAddr, "127.0.0.1:9999")
+	}
+	if cfg.MsbPath != "/opt/microsandbox/bin/msb" {
+		t.Errorf("MsbPath = %q, want override %q", cfg.MsbPath, "/opt/microsandbox/bin/msb")
+	}
+	if cfg.DataDir != "/srv/msb-manager" {
+		t.Errorf("DataDir = %q, want override %q", cfg.DataDir, "/srv/msb-manager")
+	}
+}
