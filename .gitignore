@@ -1,0 +1,27 @@
+# Go build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Secrets / config — never commit
+*-secrets.yml
+secrets.yml
+.env
+.env.*
+*.pem
+*.key
+credentials
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local Claude state
+.claude/
