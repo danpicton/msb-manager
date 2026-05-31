@@ -27,13 +27,22 @@ func NewClient(bin string, runner Runner) *Client {
 	return &Client{bin: bin, runner: runner}
 }
 
-// List shells out to `msb ls --format json` and returns the raw bytes.
-// Typed parsing will land once we have captured fixtures to snapshot-test
-// against (step-0 verification 1).
-func (c *Client) List(ctx context.Context) ([]byte, error) {
+// List shells out to `msb ls --format json` and returns the summary view of
+// every sandbox msb knows about.
+func (c *Client) List(ctx context.Context) ([]Sandbox, error) {
 	stdout, _, err := c.runner.Run(ctx, c.bin, "ls", "--format", "json")
 	if err != nil {
 		return nil, err
 	}
-	return stdout, nil
+	return parseList(stdout)
+}
+
+// Inspect shells out to `msb inspect --format json <name>` and returns the
+// full detail view of a single sandbox.
+func (c *Client) Inspect(ctx context.Context, name string) (SandboxDetail, error) {
+	stdout, _, err := c.runner.Run(ctx, c.bin, "inspect", "--format", "json", name)
+	if err != nil {
+		return SandboxDetail{}, err
+	}
+	return parseInspect(stdout)
 }

@@ -40,6 +40,23 @@ func TestClientList_InvokesMsbLsJSON(t *testing.T) {
 	}
 }
 
+func TestClientInspect_InvokesMsbInspectJSON(t *testing.T) {
+	r := &fakeRunner{stdout: []byte("{}")}
+	c := NewClient("msb", r)
+
+	if _, err := c.Inspect(context.Background(), "jsontest"); err != nil {
+		t.Fatalf("Inspect: unexpected error: %v", err)
+	}
+
+	if r.gotName != "msb" {
+		t.Errorf("invoked binary = %q, want %q", r.gotName, "msb")
+	}
+	wantArgs := []string{"inspect", "--format", "json", "jsontest"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
 func TestClientList_HonoursCustomBinaryPath(t *testing.T) {
 	r := &fakeRunner{stdout: []byte("[]")}
 	c := NewClient("/opt/microsandbox/bin/msb", r)
