@@ -7,7 +7,7 @@ import (
 )
 
 func TestHealthzReturns200(t *testing.T) {
-	srv := New(Config{})
+	srv := New(Config{}, &fakeMsb{})
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()

@@ -19,7 +19,7 @@ func doReq(h http.Handler, method, path, authHeader string) *httptest.ResponseRe
 }
 
 func TestProtectedPathWithoutTokenReturns401(t *testing.T) {
-	srv := New(Config{Token: testToken})
+	srv := New(Config{Token: testToken}, &fakeMsb{})
 
 	rec := doReq(srv, http.MethodGet, "/sandboxes", "")
 
@@ -29,7 +29,7 @@ func TestProtectedPathWithoutTokenReturns401(t *testing.T) {
 }
 
 func TestProtectedPathWithWrongTokenReturns401(t *testing.T) {
-	srv := New(Config{Token: testToken})
+	srv := New(Config{Token: testToken}, &fakeMsb{})
 
 	rec := doReq(srv, http.MethodGet, "/sandboxes", "Bearer wrong-token")
 
@@ -41,7 +41,7 @@ func TestProtectedPathWithWrongTokenReturns401(t *testing.T) {
 // A correct token must clear auth. With no /sandboxes handler registered yet,
 // passing auth surfaces as a 404 from the protected mux — crucially not a 401.
 func TestCorrectTokenClearsAuth(t *testing.T) {
-	srv := New(Config{Token: testToken})
+	srv := New(Config{Token: testToken}, &fakeMsb{})
 
 	rec := doReq(srv, http.MethodGet, "/sandboxes", "Bearer "+testToken)
 
@@ -51,7 +51,7 @@ func TestCorrectTokenClearsAuth(t *testing.T) {
 }
 
 func TestHealthzNeedsNoToken(t *testing.T) {
-	srv := New(Config{Token: testToken})
+	srv := New(Config{Token: testToken}, &fakeMsb{})
 
 	rec := doReq(srv, http.MethodGet, "/healthz", "")
 
