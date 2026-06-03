@@ -57,6 +57,59 @@ func TestClientInspect_InvokesMsbInspectJSON(t *testing.T) {
 	}
 }
 
+func TestClientCreate_InvokesMsbCreate(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+
+	if err := c.Create(context.Background(), CreateOpts{Name: "voltest", Image: "alpine"}); err != nil {
+		t.Fatalf("Create: unexpected error: %v", err)
+	}
+
+	wantArgs := []string{"create", "-n", "voltest", "alpine"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
+func TestClientStart_InvokesMsbStart(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+
+	if err := c.Start(context.Background(), "voltest"); err != nil {
+		t.Fatalf("Start: unexpected error: %v", err)
+	}
+	wantArgs := []string{"start", "voltest"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
+func TestClientStop_InvokesMsbStop(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+
+	if err := c.Stop(context.Background(), "voltest"); err != nil {
+		t.Fatalf("Stop: unexpected error: %v", err)
+	}
+	wantArgs := []string{"stop", "voltest"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
+func TestClientRm_InvokesMsbRm(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+
+	if err := c.Rm(context.Background(), "voltest"); err != nil {
+		t.Fatalf("Rm: unexpected error: %v", err)
+	}
+	wantArgs := []string{"rm", "voltest"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
 func TestClientList_HonoursCustomBinaryPath(t *testing.T) {
 	r := &fakeRunner{stdout: []byte("[]")}
 	c := NewClient("/opt/microsandbox/bin/msb", r)
