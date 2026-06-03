@@ -6,7 +6,11 @@
 // place means a CLI-output change is a one-place fix.
 package msb
 
-import "context"
+import (
+	"context"
+	"sort"
+	"strconv"
+)
 
 // Runner is the subprocess boundary. Tests inject a fake; production wires up
 // an os/exec-backed implementation. Returning stdout and stderr separately
@@ -47,20 +51,75 @@ func (c *Client) Inspect(ctx context.Context, name string) (SandboxDetail, error
 	return parseInspect(stdout)
 }
 
-// CreateOpts is the image-only create surface. Volume/env/secrets/ports/
-// network policy land with steps 4–6 (spec parsing, volumes+lock, credentials).
+// CreateOpts is the parameter object for Client.Create. It carries the step-4
+// spec fields; secrets/ssh-pubkeys/setup-script/network-policy land at step 6,
+// snapshot-source at step 7.
 type CreateOpts struct {
-	Name  string
-	Image string
+	Name      string
+	Image     string
+	CPUs      int               // 0 = unset, don't pass --cpus
+	MemoryMiB int               // 0 = unset, don't pass --memory
+	Volume    *VolumeMount      // nil = unset
+	Env       map[string]string // nil/empty = no -e flags
+	Ports     []PortMapping     // nil/empty = no -p flags
 }
 
-// Create shells out to `msb create -n <name> <image>`. msb creates the
-// sandbox and boots it in the background; a non-nil error here means the
-// create itself was rejected (the sandbox may or may not have come up — the
-// caller can poll Inspect to find out).
+// VolumeMount is a single named-volume mount: a microsandbox volume by Name,
+// surfaced at the absolute guest path Mount.
+type VolumeMount struct {
+	Name  string
+	Mount string
+}
+
+// PortMapping is a host→guest port forward.
+type PortMapping struct {
+	Host  int
+	Guest int
+}
+
+// Create shells out to `msb create -n <name> [opts...] <image>`. msb creates
+// the sandbox and boots it in the background; a non-nil error here means the
+// create itself was rejected. Boot success is observable via Inspect.
 func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
-	_, _, err := c.runner.Run(ctx, c.bin, "create", "-n", opts.Name, opts.Image)
+	args := buildCreateArgs(opts)
+	_, _, err := c.runner.Run(ctx, c.bin, args...)
 	return err
+}
+
+// buildCreateArgs is the pure spec→msb-args translation (CLAUDE.md's
+// highest-value test seam). Env entries are emitted in sorted key order so the
+// arg list is deterministic — handy for tests, audit logs, and reasoning.
+func buildCreateArgs(opts CreateOpts) []string {
+	args := []string{"create", "-n", opts.Name}
+	if opts.CPUs > 0 {
+		args = append(args, "-c", strconv.Itoa(opts.CPUs))
+	}
+	if opts.MemoryMiB > 0 {
+		args = append(args, "-m", strconv.Itoa(opts.MemoryMiB))
+	}
+	if opts.Volume != nil {
+		args = append(args, "-v", opts.Volume.Name+":"+opts.Volume.Mount)
+	}
+	for _, k := range sortedKeys(opts.Env) {
+		args = append(args, "-e", k+"="+opts.Env[k])
+	}
+	for _, p := range opts.Ports {
+		args = append(args, "-p", strconv.Itoa(p.Host)+":"+strconv.Itoa(p.Guest))
+	}
+	args = append(args, opts.Image)
+	return args
+}
+
+func sortedKeys(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
 }
 
 // Start, Stop, Rm wrap the corresponding `msb` verbs by name. They're
