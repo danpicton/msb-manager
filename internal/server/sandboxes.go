@@ -2,10 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 
 	"msb-manager/internal/msb"
+	"msb-manager/internal/spec"
 )
 
 func handleListSandboxes(client MsbClient) http.HandlerFunc {
@@ -35,32 +37,35 @@ func handleInspectSandbox(client MsbClient) http.HandlerFunc {
 	}
 }
 
-// createSandboxRequest is the image-only create body. Spec parsing (YAML,
-// volumes, env, secrets, ports, network policy) is step 4 and grows fields
-// here as it lands.
-type createSandboxRequest struct {
-	Name  string `json:"name"`
-	Image string `json:"image"`
-}
+// maxSpecBytes caps the request body. A spec is small declarative YAML/JSON;
+// anything larger than this is either a bug or an attack.
+const maxSpecBytes = 64 * 1024
 
 func handleCreateSandbox(client MsbClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req createSandboxRequest
-		dec := json.NewDecoder(r.Body)
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxSpecBytes+1))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "could not read body"})
 			return
 		}
-		if req.Name == "" || req.Image == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and image are required"})
+		if len(body) > maxSpecBytes {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "spec too large"})
 			return
 		}
-		if err := client.Create(r.Context(), msb.CreateOpts{Name: req.Name, Image: req.Image}); err != nil {
+		s, err := spec.Parse(body)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := s.Validate(); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := client.Create(r.Context(), s.ToCreateOpts()); err != nil {
 			writeAdapterError(w, r, "create sandbox", err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name, "image": req.Image})
+		writeJSON(w, http.StatusCreated, map[string]string{"name": s.Name, "image": s.Image})
 	}
 }
 
