@@ -22,6 +22,10 @@ type Config struct {
 type MsbClient interface {
 	List(ctx context.Context) ([]msb.Sandbox, error)
 	Inspect(ctx context.Context, name string) (msb.SandboxDetail, error)
+	Create(ctx context.Context, opts msb.CreateOpts) error
+	Start(ctx context.Context, name string) error
+	Stop(ctx context.Context, name string) error
+	Rm(ctx context.Context, name string) error
 }
 
 // New builds the control-plane HTTP handler. Every route except /healthz sits
@@ -29,7 +33,11 @@ type MsbClient interface {
 func New(cfg Config, client MsbClient) http.Handler {
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /sandboxes", handleListSandboxes(client))
+	protected.HandleFunc("POST /sandboxes", handleCreateSandbox(client))
 	protected.HandleFunc("GET /sandboxes/{name}", handleInspectSandbox(client))
+	protected.HandleFunc("DELETE /sandboxes/{name}", handleDeleteSandbox(client))
+	protected.HandleFunc("POST /sandboxes/{name}/start", handleStartSandbox(client))
+	protected.HandleFunc("POST /sandboxes/{name}/stop", handleStopSandbox(client))
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", handleHealthz)

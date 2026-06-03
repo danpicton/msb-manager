@@ -35,6 +35,65 @@ func handleInspectSandbox(client MsbClient) http.HandlerFunc {
 	}
 }
 
+// createSandboxRequest is the image-only create body. Spec parsing (YAML,
+// volumes, env, secrets, ports, network policy) is step 4 and grows fields
+// here as it lands.
+type createSandboxRequest struct {
+	Name  string `json:"name"`
+	Image string `json:"image"`
+}
+
+func handleCreateSandbox(client MsbClient) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req createSandboxRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+			return
+		}
+		if req.Name == "" || req.Image == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and image are required"})
+			return
+		}
+		if err := client.Create(r.Context(), msb.CreateOpts{Name: req.Name, Image: req.Image}); err != nil {
+			writeAdapterError(w, r, "create sandbox", err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name, "image": req.Image})
+	}
+}
+
+func handleStartSandbox(client MsbClient) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := client.Start(r.Context(), r.PathValue("name")); err != nil {
+			writeAdapterError(w, r, "start sandbox", err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func handleStopSandbox(client MsbClient) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := client.Stop(r.Context(), r.PathValue("name")); err != nil {
+			writeAdapterError(w, r, "stop sandbox", err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func handleDeleteSandbox(client MsbClient) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := client.Rm(r.Context(), r.PathValue("name")); err != nil {
+			writeAdapterError(w, r, "remove sandbox", err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
