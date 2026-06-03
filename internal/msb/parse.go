@@ -47,6 +47,7 @@ type inspectDTO struct {
 			ReadOnly bool   `json:"readonly"`
 			SizeMiB  int    `json:"size_mib"`
 			Type     string `json:"type"`
+			Name     string `json:"name"`
 		} `json:"mounts"`
 	} `json:"config"`
 }
@@ -85,6 +86,7 @@ func parseInspect(data []byte) (SandboxDetail, error) {
 			Type:     m.Type,
 			ReadOnly: m.ReadOnly,
 			SizeMiB:  m.SizeMiB,
+			Name:     m.Name,
 		})
 	}
 

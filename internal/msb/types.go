@@ -25,12 +25,25 @@ type SandboxDetail struct {
 	Mounts    []Mount           // config.mounts
 }
 
-// Mount is a guest mount point. Type distinguishes "Tmpfs" (auto) from named
-// volumes; the named-volume source field is TBD until we capture a fixture for
-// one (see CONTEXT open verification #1).
+// Mount is a guest mount point. Type distinguishes "Tmpfs" (auto, sized) from
+// "Named" (a persistent microsandbox volume, which carries a source Name).
 type Mount struct {
 	Guest    string
 	Type     string
 	ReadOnly bool
-	SizeMiB  int
+	SizeMiB  int    // Tmpfs mounts only
+	Name     string // source volume name; set for Type=="Named"
+}
+
+// VolumeNames returns the source names of every named-volume mount. This is
+// what the one-VM-per-volume lock keys on — derivable from msb state alone,
+// so the lock stays stateless (CONTEXT open verification #1, resolved).
+func (d SandboxDetail) VolumeNames() []string {
+	var out []string
+	for _, m := range d.Mounts {
+		if m.Type == "Named" && m.Name != "" {
+			out = append(out, m.Name)
+		}
+	}
+	return out
 }
