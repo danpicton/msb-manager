@@ -145,3 +145,32 @@ fnord: yes
 		t.Fatal("Parse(unknown field): got nil, want strict error")
 	}
 }
+
+func TestToCreateOpts_MapsAllFields(t *testing.T) {
+	s := Spec{
+		Name:   "voltest",
+		Image:  "alpine",
+		CPUs:   2,
+		Memory: 512,
+		Volume: &Volume{Name: "myvol", Mount: "/workspace"},
+		Env:    map[string]string{"FOO": "bar"},
+		Ports:  []PortMapping{{Host: 8080, Guest: 80}},
+	}
+	opts := s.ToCreateOpts()
+
+	if opts.Name != "voltest" || opts.Image != "alpine" {
+		t.Errorf("Name/Image = %q/%q, want voltest/alpine", opts.Name, opts.Image)
+	}
+	if opts.CPUs != 2 || opts.MemoryMiB != 512 {
+		t.Errorf("CPUs/MemoryMiB = %d/%d, want 2/512", opts.CPUs, opts.MemoryMiB)
+	}
+	if opts.Volume == nil || opts.Volume.Name != "myvol" || opts.Volume.Mount != "/workspace" {
+		t.Errorf("Volume = %+v, want {myvol, /workspace}", opts.Volume)
+	}
+	if opts.Env["FOO"] != "bar" {
+		t.Errorf("Env = %+v, want FOO=bar", opts.Env)
+	}
+	if len(opts.Ports) != 1 || opts.Ports[0].Host != 8080 || opts.Ports[0].Guest != 80 {
+		t.Errorf("Ports = %+v, want [8080:80]", opts.Ports)
+	}
+}
