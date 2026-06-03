@@ -13,6 +13,8 @@ import (
 	"path"
 
 	"gopkg.in/yaml.v3"
+
+	"msb-manager/internal/msb"
 )
 
 // Spec describes a sandbox to create. Field set grows as later steps land
@@ -50,6 +52,26 @@ func Parse(data []byte) (Spec, error) {
 		return Spec{}, fmt.Errorf("parse spec: %w", err)
 	}
 	return s, nil
+}
+
+// ToCreateOpts maps a (validated) Spec onto the adapter's parameter object.
+// The mapping is straight-through; the only translation is the volume shape.
+// Callers should Validate() before mapping; ToCreateOpts trusts its input.
+func (s Spec) ToCreateOpts() msb.CreateOpts {
+	opts := msb.CreateOpts{
+		Name:      s.Name,
+		Image:     s.Image,
+		CPUs:      s.CPUs,
+		MemoryMiB: s.Memory,
+		Env:       s.Env,
+	}
+	if s.Volume != nil {
+		opts.Volume = &msb.VolumeMount{Name: s.Volume.Name, Mount: s.Volume.Mount}
+	}
+	for _, p := range s.Ports {
+		opts.Ports = append(opts.Ports, msb.PortMapping{Host: p.Host, Guest: p.Guest})
+	}
+	return opts
 }
 
 // Validate checks the required-field invariants and field-level format checks.
