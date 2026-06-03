@@ -147,6 +147,70 @@ func TestPostSandboxes_CreatesAndReturns201(t *testing.T) {
 	}
 }
 
+func TestPostSandboxes_AcceptsYAML(t *testing.T) {
+	client := &fakeMsb{}
+	srv := New(Config{Token: testToken}, client)
+
+	body := `name: voltest
+image: alpine
+cpus: 2
+memory: 512
+volume:
+  name: myvol
+  mount: /workspace
+env:
+  PATH: /usr/bin
+ports:
+  - host: 8080
+    guest: 80
+`
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Content-Type", "application/yaml")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+
+	got := client.gotCreateOpts
+	if got.Name != "voltest" || got.Image != "alpine" {
+		t.Errorf("Name/Image = %q/%q, want voltest/alpine", got.Name, got.Image)
+	}
+	if got.CPUs != 2 || got.MemoryMiB != 512 {
+		t.Errorf("CPUs/MemoryMiB = %d/%d, want 2/512", got.CPUs, got.MemoryMiB)
+	}
+	if got.Volume == nil || got.Volume.Name != "myvol" || got.Volume.Mount != "/workspace" {
+		t.Errorf("Volume = %+v, want {myvol, /workspace}", got.Volume)
+	}
+	if got.Env["PATH"] != "/usr/bin" {
+		t.Errorf("Env = %+v, want PATH=/usr/bin", got.Env)
+	}
+	if len(got.Ports) != 1 || got.Ports[0].Host != 8080 || got.Ports[0].Guest != 80 {
+		t.Errorf("Ports = %+v, want [8080:80]", got.Ports)
+	}
+}
+
+// Spec validation failures (e.g. negative cpus, unknown field) must surface as
+// 400 from the handler, not 500 — they're client errors.
+func TestPostSandboxes_SpecValidationReturns400(t *testing.T) {
+	client := &fakeMsb{}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/sandboxes",
+		`{"name":"voltest","image":"alpine","cpus":-1}`))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if client.gotCreateOpts.Name != "" {
+		t.Error("Create called on invalid spec — should have stopped at Validate")
+	}
+}
+
 func TestPostSandboxes_RejectsBadJSON(t *testing.T) {
 	client := &fakeMsb{}
 	srv := New(Config{Token: testToken}, client)
