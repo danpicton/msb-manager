@@ -3,36 +3,36 @@ package msb
 // Sandbox is the summary view of a microsandbox microVM, as returned by
 // `msb ls`. It carries only the identity/state fields the list endpoint needs.
 type Sandbox struct {
-	Name      string
-	Image     string // base image or snapshot reference
-	Status    string
-	CreatedAt string
+	Name      string `json:"name"`
+	Image     string `json:"image"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
 }
 
 // SandboxDetail is the full view from `msb inspect`, flattened from msb's
 // nested config into the fields the control plane cares about.
 type SandboxDetail struct {
-	Name      string
-	Status    string
-	CreatedAt string
-	UpdatedAt string
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 
-	Image     string            // config.image.<variant>.reference
-	CPUs      int               // config.cpus
-	MemoryMiB int               // config.memory_mib
-	Workdir   string            // config.workdir
-	Env       map[string]string // config.env, folded from [key,value] tuples
-	Mounts    []Mount           // config.mounts
+	Image     string            `json:"image"`
+	CPUs      int               `json:"cpus"`
+	MemoryMiB int               `json:"memory_mib"`
+	Workdir   string            `json:"workdir"`
+	Env       map[string]string `json:"env,omitempty"`
+	Mounts    []Mount           `json:"mounts,omitempty"`
 }
 
 // Mount is a guest mount point. Type distinguishes "Tmpfs" (auto, sized) from
 // "Named" (a persistent microsandbox volume, which carries a source Name).
 type Mount struct {
-	Guest    string
-	Type     string
-	ReadOnly bool
-	SizeMiB  int    // Tmpfs mounts only
-	Name     string // source volume name; set for Type=="Named"
+	Guest    string `json:"guest"`
+	Type     string `json:"type"`
+	ReadOnly bool   `json:"readonly"`
+	SizeMiB  int    `json:"size_mib,omitempty"` // Tmpfs mounts only
+	Name     string `json:"name,omitempty"`     // source volume name; set for Type=="Named"
 }
 
 // VolumeNames returns the source names of every named-volume mount. This is

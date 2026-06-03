@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"msb-manager/internal/config"
+	"msb-manager/internal/msb"
 	"msb-manager/internal/server"
 )
 
@@ -36,9 +37,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	msbClient := msb.NewClient(cfg.MsbPath, msb.ExecRunner{})
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: server.New(server.Config{Token: cfg.Token}),
+		Handler: server.New(server.Config{Token: cfg.Token}, msbClient),
 	}
 
 	// Run the listener in the background; main goroutine waits for a signal.
