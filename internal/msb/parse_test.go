@@ -108,3 +108,39 @@ func TestParseInspect(t *testing.T) {
 		t.Errorf("Mount.SizeMiB = %d, want 64", m.SizeMiB)
 	}
 }
+
+// Closes open verification #1: a named-volume mount surfaces its source name
+// and a "Named" type, so the one-VM-per-volume lock is derivable from msb
+// state alone (no server-owned volume map needed).
+func TestParseInspect_NamedVolume(t *testing.T) {
+	got, err := parseInspect(readFixture(t, "inspect_named_volume.json"))
+	if err != nil {
+		t.Fatalf("parseInspect: %v", err)
+	}
+
+	var named *Mount
+	for i := range got.Mounts {
+		if got.Mounts[i].Type == "Named" {
+			named = &got.Mounts[i]
+			break
+		}
+	}
+	if named == nil {
+		t.Fatalf("no Named mount found in %+v", got.Mounts)
+	}
+	if named.Name != "myvol" {
+		t.Errorf("Mount.Name = %q, want %q", named.Name, "myvol")
+	}
+	if named.Guest != "/workspace" {
+		t.Errorf("Mount.Guest = %q, want %q", named.Guest, "/workspace")
+	}
+	if named.ReadOnly {
+		t.Error("Mount.ReadOnly = true, want false")
+	}
+
+	// VolumeNames is the convenience the lock will key on.
+	vols := got.VolumeNames()
+	if len(vols) != 1 || vols[0] != "myvol" {
+		t.Errorf("VolumeNames() = %v, want [myvol]", vols)
+	}
+}
