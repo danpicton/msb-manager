@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakeRunner records the last invocation and returns canned output. It's the
@@ -160,6 +163,57 @@ func TestClientList_HonoursCustomBinaryPath(t *testing.T) {
 	if r.gotName != "/opt/microsandbox/bin/msb" {
 		t.Errorf("invoked binary = %q, want override", r.gotName)
 	}
+}
+
+// Mutating commands must not overlap: msb v0.5.2 is not concurrent-safe
+// (CONTEXT verification #3). Read calls are unaffected — they don't take the
+// mutex — but Create/Start/Stop/Rm are serialised. This test fires N
+// concurrent goroutines through Create and asserts the runner never sees
+// more than one in flight at once.
+func TestClient_MutatingCommandsSerialise(t *testing.T) {
+	var (
+		inflight atomic.Int32
+		maxSeen  atomic.Int32
+	)
+	r := &concurrencyRunner{
+		onCall: func() {
+			cur := inflight.Add(1)
+			for {
+				old := maxSeen.Load()
+				if cur <= old || maxSeen.CompareAndSwap(old, cur) {
+					break
+				}
+			}
+			// Hold the call open long enough that an unserialised second call
+			// would race in.
+			time.Sleep(15 * time.Millisecond)
+			inflight.Add(-1)
+		},
+	}
+	c := NewClient("msb", r)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = c.Create(context.Background(), CreateOpts{Name: "x", Image: "alpine"})
+		}()
+	}
+	wg.Wait()
+
+	if got := maxSeen.Load(); got > 1 {
+		t.Errorf("max concurrent Create invocations = %d, want 1", got)
+	}
+}
+
+type concurrencyRunner struct {
+	onCall func()
+}
+
+func (cr *concurrencyRunner) Run(_ context.Context, _ string, _ ...string) ([]byte, []byte, error) {
+	cr.onCall()
+	return nil, nil, nil
 }
 
 // When the runner returns a non-zero exit, Client methods classify the stderr
