@@ -23,20 +23,24 @@ func newWithLock(cfg Config, client MsbClient, vlock *lock.VolumeLock) http.Hand
 // canned data/error and records its arguments so tests can assert what the
 // handler forwarded.
 type fakeMsb struct {
-	listOut    []msb.Sandbox
-	listErr    error
-	inspectOut msb.SandboxDetail
-	inspectErr error
-	createErr  error
-	startErr   error
-	stopErr    error
-	rmErr      error
+	listOut          []msb.Sandbox
+	listErr          error
+	inspectOut       msb.SandboxDetail
+	inspectErr       error
+	createErr        error
+	startErr         error
+	stopErr          error
+	rmErr            error
+	volumeCreateErr  error
+	volumeRmErr      error
 
-	gotInspectName string
-	gotCreateOpts  msb.CreateOpts
-	gotStartName   string
-	gotStopName    string
-	gotRmName      string
+	gotInspectName     string
+	gotCreateOpts      msb.CreateOpts
+	gotStartName       string
+	gotStopName        string
+	gotRmName          string
+	gotVolumeCreate    [2]string // name, size
+	gotVolumeRm        string
 }
 
 func (f *fakeMsb) List(_ context.Context) ([]msb.Sandbox, error) {
@@ -61,6 +65,14 @@ func (f *fakeMsb) Stop(_ context.Context, name string) error {
 func (f *fakeMsb) Rm(_ context.Context, name string) error {
 	f.gotRmName = name
 	return f.rmErr
+}
+func (f *fakeMsb) VolumeCreate(_ context.Context, name, size string) error {
+	f.gotVolumeCreate = [2]string{name, size}
+	return f.volumeCreateErr
+}
+func (f *fakeMsb) VolumeRm(_ context.Context, name string) error {
+	f.gotVolumeRm = name
+	return f.volumeRmErr
 }
 
 func authed(method, path string) *http.Request {
@@ -550,5 +562,119 @@ func TestStatusMapping_Conflict(t *testing.T) {
 				t.Errorf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// --- Volume endpoints ---
+
+func TestPostVolumes_CreatesAndReturns201(t *testing.T) {
+	client := &fakeMsb{}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/volumes",
+		`{"name":"myvol","size":"1G"}`))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	if client.gotVolumeCreate != [2]string{"myvol", "1G"} {
+		t.Errorf("VolumeCreate called with %v, want {myvol, 1G}", client.gotVolumeCreate)
+	}
+}
+
+func TestPostVolumes_AcceptsYAML(t *testing.T) {
+	client := &fakeMsb{}
+	srv := New(Config{Token: testToken}, client)
+
+	req := httptest.NewRequest(http.MethodPost, "/volumes",
+		strings.NewReader("name: yamlvol\nsize: 2G\n"))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Content-Type", "application/yaml")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
+	}
+	if client.gotVolumeCreate != [2]string{"yamlvol", "2G"} {
+		t.Errorf("VolumeCreate called with %v, want {yamlvol, 2G}", client.gotVolumeCreate)
+	}
+}
+
+func TestPostVolumes_RequiresNameAndSize(t *testing.T) {
+	cases := []string{
+		`{}`,
+		`{"name":"v"}`,
+		`{"size":"1G"}`,
+		`{"name":"v","size":""}`,
+	}
+	for _, body := range cases {
+		client := &fakeMsb{}
+		srv := New(Config{Token: testToken}, client)
+
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/volumes", body))
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status = %d, want 400", body, rec.Code)
+		}
+		if client.gotVolumeCreate[0] != "" {
+			t.Errorf("body %s: VolumeCreate invoked despite bad request", body)
+		}
+	}
+}
+
+func TestPostVolumes_RejectsUnknownFields(t *testing.T) {
+	client := &fakeMsb{}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/volumes",
+		`{"name":"v","size":"1G","fnord":true}`))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestPostVolumes_AlreadyExistsReturns409(t *testing.T) {
+	client := &fakeMsb{volumeCreateErr: msb.ErrVolumeAlreadyExists}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/volumes",
+		`{"name":"myvol","size":"1G"}`))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+}
+
+func TestDeleteVolume_InvokesAndReturns204(t *testing.T) {
+	client := &fakeMsb{}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodDelete, "/volumes/myvol"))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	if client.gotVolumeRm != "myvol" {
+		t.Errorf("VolumeRm called with %q, want %q", client.gotVolumeRm, "myvol")
+	}
+}
+
+func TestDeleteVolume_AdapterErrorReturns500(t *testing.T) {
+	client := &fakeMsb{volumeRmErr: errors.New("boom")}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodDelete, "/volumes/myvol"))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 }
