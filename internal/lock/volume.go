@@ -71,6 +71,16 @@ func (l *VolumeLock) Release(sandbox string) {
 	}
 }
 
+// Holder returns the sandbox currently holding volume, if any. Useful for
+// pre-checks ("can I delete this volume?") that don't want Acquire's
+// claim-as-side-effect semantics.
+func (l *VolumeLock) Holder(volume string) (sandbox string, ok bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	sandbox, ok = l.held[volume]
+	return
+}
+
 // Reconcile replaces the entire in-memory state with the given snapshot.
 // Called at startup to seed from `msb` truth; can also be called periodically
 // or before risky operations to defend against out-of-band msb usage.

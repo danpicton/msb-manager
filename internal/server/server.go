@@ -52,7 +52,7 @@ func NewWithLock(cfg Config, client MsbClient, vlock *lock.VolumeLock) http.Hand
 	protected.HandleFunc("POST /sandboxes/{name}/stop", handleStopSandbox(client, vlock))
 	protected.HandleFunc("GET /volumes", handleListVolumes(client))
 	protected.HandleFunc("POST /volumes", handleCreateVolume(client))
-	protected.HandleFunc("DELETE /volumes/{name}", handleDeleteVolume(client))
+	protected.HandleFunc("DELETE /volumes/{name}", handleDeleteVolume(client, vlock))
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", handleHealthz)

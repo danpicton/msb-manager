@@ -79,4 +79,7 @@ The stateless model rests on three unverified microsandbox behaviours. None bloc
   - `sandbox not found: <name>` → mapped to HTTP 404
   - `sandbox already exists: <details>` → 409
   - `sandbox still running: <details>` → 409 (rm of running sandbox)
+  - `volume already exists: <name>` → 409
+  - `volume not found: <name>` → 404
   - Anything else stays 500. Fixtures in `internal/msb/errors_test.go`; classifier in `internal/msb/errors.go`.
+- **`msb volume rm` does NOT block on in-use volumes.** Verified: removing a volume currently mounted by a running sandbox returns exit 0 and the volume is gone (the running sandbox keeps the mount until it stops, but the volume is no longer in `msb volume ls`). msb-manager's `DELETE /volumes/{name}` consults the in-memory VolumeLock and returns 409 when a running sandbox holds the claim — a safer invariant than msb itself enforces.

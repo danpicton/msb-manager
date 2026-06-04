@@ -2,11 +2,13 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 
 	"gopkg.in/yaml.v3"
 
+	"msb-manager/internal/lock"
 	"msb-manager/internal/msb"
 )
 
@@ -64,9 +66,17 @@ func handleCreateVolume(client MsbClient) http.HandlerFunc {
 	}
 }
 
-func handleDeleteVolume(client MsbClient) http.HandlerFunc {
+func handleDeleteVolume(client MsbClient, vlock *lock.VolumeLock) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		// msb itself will remove a volume out from under a running sandbox
+		// (verified msb v0.5.2). Refuse here when our lock shows it's in use.
+		if holder, ok := vlock.Holder(name); ok {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": fmt.Sprintf("volume %q in use by running sandbox %q", name, holder),
+			})
+			return
+		}
 		if err := client.VolumeRm(r.Context(), name); err != nil {
 			writeAdapterError(w, r, "remove volume", err)
 			return
