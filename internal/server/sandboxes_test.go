@@ -9,8 +9,15 @@ import (
 	"strings"
 	"testing"
 
+	"msb-manager/internal/lock"
 	"msb-manager/internal/msb"
 )
+
+// newWithLock is shorthand for the test cases that need a non-zero VolumeLock.
+// Pre-existing tests still go through New(cfg, client) and get a fresh lock.
+func newWithLock(cfg Config, client MsbClient, vlock *lock.VolumeLock) http.Handler {
+	return NewWithLock(cfg, client, vlock)
+}
 
 // fakeMsb is the test double for the msb adapter. Each method either returns
 // canned data/error and records its arguments so tests can assert what the
@@ -343,6 +350,169 @@ func TestStatusMapping_NotFound(t *testing.T) {
 				t.Errorf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// VolumeLock integration: a sandbox declaring a volume must not be created
+// while another sandbox already claims that volume. The 409 surfaces the
+// holder so the user knows what to stop/rm.
+func TestPostSandboxes_VolumeBusyReturns409(t *testing.T) {
+	client := &fakeMsb{}
+	vlock := lock.New()
+	_ = vlock.Acquire("myvol", "alice") // alice already holds it
+	srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+	body := `name: bob
+image: alpine
+volume:
+  name: myvol
+  mount: /workspace
+`
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Content-Type", "application/yaml")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	if client.gotCreateOpts.Name != "" {
+		t.Error("Create called despite volume conflict; lock should short-circuit")
+	}
+}
+
+func TestPostSandboxes_AdapterFailureRollsBackVolumeClaim(t *testing.T) {
+	client := &fakeMsb{createErr: errors.New("boom")}
+	vlock := lock.New()
+	srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+	body := `name: alice
+image: alpine
+volume:
+  name: myvol
+  mount: /workspace
+`
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Content-Type", "application/yaml")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	// Lock should NOT still be held — the failed Create must roll back.
+	if err := vlock.Acquire("myvol", "carol"); err != nil {
+		t.Errorf("myvol should be free after failed Create; got %v", err)
+	}
+}
+
+func TestPostSandboxes_SuccessClaimsVolume(t *testing.T) {
+	client := &fakeMsb{}
+	vlock := lock.New()
+	srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+	body := `name: alice
+image: alpine
+volume:
+  name: myvol
+  mount: /workspace
+`
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Content-Type", "application/yaml")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	// myvol must now be held by alice.
+	if err := vlock.Acquire("myvol", "bob"); !errors.Is(err, lock.ErrVolumeBusy) {
+		t.Errorf("myvol should be alice's after successful Create; got %v", err)
+	}
+}
+
+// Start needs to look up the sandbox's volumes (via Inspect) before claiming.
+func TestPostSandboxStart_AcquiresVolumesFromInspect(t *testing.T) {
+	client := &fakeMsb{
+		inspectOut: msb.SandboxDetail{
+			Name:   "alice",
+			Mounts: []msb.Mount{{Type: "Named", Name: "myvol", Guest: "/workspace"}},
+		},
+	}
+	vlock := lock.New()
+	srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodPost, "/sandboxes/alice/start"))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	if err := vlock.Acquire("myvol", "bob"); !errors.Is(err, lock.ErrVolumeBusy) {
+		t.Errorf("myvol should be alice's after successful Start; got %v", err)
+	}
+}
+
+func TestPostSandboxStart_VolumeBusyReturns409(t *testing.T) {
+	client := &fakeMsb{
+		inspectOut: msb.SandboxDetail{
+			Name:   "bob",
+			Mounts: []msb.Mount{{Type: "Named", Name: "myvol", Guest: "/workspace"}},
+		},
+	}
+	vlock := lock.New()
+	_ = vlock.Acquire("myvol", "alice") // alice already running with myvol
+	srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodPost, "/sandboxes/bob/start"))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+	if client.gotStartName != "" {
+		t.Error("Start invoked despite volume conflict")
+	}
+}
+
+// Stop and Delete release the sandbox's claims so other sandboxes can start.
+func TestPostSandboxStop_ReleasesVolumes(t *testing.T) {
+	client := &fakeMsb{}
+	vlock := lock.New()
+	_ = vlock.Acquire("myvol", "alice")
+	srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodPost, "/sandboxes/alice/stop"))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	if err := vlock.Acquire("myvol", "bob"); err != nil {
+		t.Errorf("myvol should be free after Stop(alice); got %v", err)
+	}
+}
+
+func TestDeleteSandbox_ReleasesVolumes(t *testing.T) {
+	client := &fakeMsb{}
+	vlock := lock.New()
+	_ = vlock.Acquire("myvol", "alice")
+	srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodDelete, "/sandboxes/alice"))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	if err := vlock.Acquire("myvol", "bob"); err != nil {
+		t.Errorf("myvol should be free after Delete(alice); got %v", err)
 	}
 }
 
