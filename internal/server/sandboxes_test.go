@@ -31,6 +31,8 @@ type fakeMsb struct {
 	startErr         error
 	stopErr          error
 	rmErr            error
+	volumeListOut    []msb.Volume
+	volumeListErr    error
 	volumeCreateErr  error
 	volumeRmErr      error
 
@@ -65,6 +67,9 @@ func (f *fakeMsb) Stop(_ context.Context, name string) error {
 func (f *fakeMsb) Rm(_ context.Context, name string) error {
 	f.gotRmName = name
 	return f.rmErr
+}
+func (f *fakeMsb) VolumeList(_ context.Context) ([]msb.Volume, error) {
+	return f.volumeListOut, f.volumeListErr
 }
 func (f *fakeMsb) VolumeCreate(_ context.Context, name, size string) error {
 	f.gotVolumeCreate = [2]string{name, size}
@@ -673,6 +678,57 @@ func TestDeleteVolume_AdapterErrorReturns500(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, authed(http.MethodDelete, "/volumes/myvol"))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+func TestGetVolumes_ReturnsJSONFromMsbVolumeLs(t *testing.T) {
+	client := &fakeMsb{volumeListOut: []msb.Volume{
+		{Name: "v1", QuotaMiB: 1024, UsedBytes: 0, CreatedAt: "2026-06-04 17:45:29"},
+	}}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodGet, "/volumes"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+	var got []msb.Volume
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response not JSON list: %v; body=%s", err, rec.Body.String())
+	}
+	if len(got) != 1 || got[0].Name != "v1" || got[0].QuotaMiB != 1024 {
+		t.Errorf("body = %+v, want one v1/1024 entry", got)
+	}
+}
+
+func TestGetVolumes_EmptyReturnsJSONArray(t *testing.T) {
+	client := &fakeMsb{}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodGet, "/volumes"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
+		t.Errorf("body = %q, want %q (empty array, not null)", body, "[]")
+	}
+}
+
+func TestGetVolumes_AdapterErrorReturns500(t *testing.T) {
+	client := &fakeMsb{volumeListErr: errors.New("boom")}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodGet, "/volumes"))
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
