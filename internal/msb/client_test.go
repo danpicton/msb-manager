@@ -152,6 +152,32 @@ func TestClientRm_InvokesMsbRm(t *testing.T) {
 	}
 }
 
+func TestClientVolumeCreate_InvokesMsbVolumeCreate(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+
+	if err := c.VolumeCreate(context.Background(), "myvol", "1G"); err != nil {
+		t.Fatalf("VolumeCreate: unexpected error: %v", err)
+	}
+	wantArgs := []string{"volume", "create", "--size", "1G", "myvol"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
+func TestClientVolumeRm_InvokesMsbVolumeRm(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+
+	if err := c.VolumeRm(context.Background(), "myvol"); err != nil {
+		t.Fatalf("VolumeRm: unexpected error: %v", err)
+	}
+	wantArgs := []string{"volume", "rm", "myvol"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
 func TestClientList_HonoursCustomBinaryPath(t *testing.T) {
 	r := &fakeRunner{stdout: []byte("[]")}
 	c := NewClient("/opt/microsandbox/bin/msb", r)

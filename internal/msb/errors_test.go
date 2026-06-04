@@ -33,6 +33,12 @@ var classifyCases = []struct {
 		wantText: "probe",
 	},
 	{
+		name:     "volume already exists",
+		stderr:   "error: volume already exists: myvol\n",
+		wantErr:  ErrVolumeAlreadyExists,
+		wantText: "myvol",
+	},
+	{
 		name:    "unknown stays unknown",
 		stderr:  "error: something we have not seen before\n",
 		wantErr: nil, // classifyError returns nil for unrecognised → caller keeps the raw exit error
