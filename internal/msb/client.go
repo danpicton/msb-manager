@@ -34,9 +34,9 @@ func NewClient(bin string, runner Runner) *Client {
 // List shells out to `msb ls --format json` and returns the summary view of
 // every sandbox msb knows about.
 func (c *Client) List(ctx context.Context) ([]Sandbox, error) {
-	stdout, _, err := c.runner.Run(ctx, c.bin, "ls", "--format", "json")
+	stdout, stderr, err := c.runner.Run(ctx, c.bin, "ls", "--format", "json")
 	if err != nil {
-		return nil, err
+		return nil, wrapRunErr(stderr, err)
 	}
 	return parseList(stdout)
 }
@@ -44,11 +44,24 @@ func (c *Client) List(ctx context.Context) ([]Sandbox, error) {
 // Inspect shells out to `msb inspect --format json <name>` and returns the
 // full detail view of a single sandbox.
 func (c *Client) Inspect(ctx context.Context, name string) (SandboxDetail, error) {
-	stdout, _, err := c.runner.Run(ctx, c.bin, "inspect", "--format", "json", name)
+	stdout, stderr, err := c.runner.Run(ctx, c.bin, "inspect", "--format", "json", name)
 	if err != nil {
-		return SandboxDetail{}, err
+		return SandboxDetail{}, wrapRunErr(stderr, err)
 	}
 	return parseInspect(stdout)
+}
+
+// wrapRunErr classifies msb's stderr into a typed sentinel where possible,
+// falling back to the raw exit error. Always returns non-nil when err is
+// non-nil. The single place callers should funnel runner errors through.
+func wrapRunErr(stderr []byte, err error) error {
+	if err == nil {
+		return nil
+	}
+	if classified := classifyError(string(stderr)); classified != nil {
+		return classified
+	}
+	return err
 }
 
 // CreateOpts is the parameter object for Client.Create. It carries the step-4
@@ -82,8 +95,8 @@ type PortMapping struct {
 // create itself was rejected. Boot success is observable via Inspect.
 func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 	args := buildCreateArgs(opts)
-	_, _, err := c.runner.Run(ctx, c.bin, args...)
-	return err
+	_, stderr, err := c.runner.Run(ctx, c.bin, args...)
+	return wrapRunErr(stderr, err)
 }
 
 // buildCreateArgs is the pure spec→msb-args translation (CLAUDE.md's
@@ -126,16 +139,16 @@ func sortedKeys(m map[string]string) []string {
 // trivially uniform; if msb ever grows per-verb flags we care about, they
 // become per-method args structs the way Create did.
 func (c *Client) Start(ctx context.Context, name string) error {
-	_, _, err := c.runner.Run(ctx, c.bin, "start", name)
-	return err
+	_, stderr, err := c.runner.Run(ctx, c.bin, "start", name)
+	return wrapRunErr(stderr, err)
 }
 
 func (c *Client) Stop(ctx context.Context, name string) error {
-	_, _, err := c.runner.Run(ctx, c.bin, "stop", name)
-	return err
+	_, stderr, err := c.runner.Run(ctx, c.bin, "stop", name)
+	return wrapRunErr(stderr, err)
 }
 
 func (c *Client) Rm(ctx context.Context, name string) error {
-	_, _, err := c.runner.Run(ctx, c.bin, "rm", name)
-	return err
+	_, stderr, err := c.runner.Run(ctx, c.bin, "rm", name)
+	return wrapRunErr(stderr, err)
 }
