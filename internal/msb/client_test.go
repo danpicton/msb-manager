@@ -2,6 +2,7 @@ package msb
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -158,5 +159,67 @@ func TestClientList_HonoursCustomBinaryPath(t *testing.T) {
 
 	if r.gotName != "/opt/microsandbox/bin/msb" {
 		t.Errorf("invoked binary = %q, want override", r.gotName)
+	}
+}
+
+// When the runner returns a non-zero exit, Client methods classify the stderr
+// and wrap the recognised sentinel. The HTTP layer errors.Is()-es to pick a
+// status. Inspect is the easiest to exercise — its real-world failure mode is
+// "not found" on a typo.
+func TestClientInspect_NotFound_WrapsSentinel(t *testing.T) {
+	r := &fakeRunner{
+		stderr: []byte("error: sandbox not found: nope\n"),
+		err:    errors.New("exit status 1"),
+	}
+	c := NewClient("msb", r)
+
+	_, err := c.Inspect(context.Background(), "nope")
+	if !errors.Is(err, ErrSandboxNotFound) {
+		t.Fatalf("Inspect on missing: got %v, want wrap of ErrSandboxNotFound", err)
+	}
+}
+
+func TestClientCreate_AlreadyExists_WrapsSentinel(t *testing.T) {
+	r := &fakeRunner{
+		stderr: []byte("error: sandbox already exists: sandbox 'probe' already exists\n"),
+		err:    errors.New("exit status 1"),
+	}
+	c := NewClient("msb", r)
+
+	err := c.Create(context.Background(), CreateOpts{Name: "probe", Image: "alpine"})
+	if !errors.Is(err, ErrSandboxAlreadyExists) {
+		t.Fatalf("Create on duplicate: got %v, want wrap of ErrSandboxAlreadyExists", err)
+	}
+}
+
+func TestClientRm_StillRunning_WrapsSentinel(t *testing.T) {
+	r := &fakeRunner{
+		stderr: []byte("error: sandbox still running: cannot remove sandbox 'probe': still running\n"),
+		err:    errors.New("exit status 1"),
+	}
+	c := NewClient("msb", r)
+
+	err := c.Rm(context.Background(), "probe")
+	if !errors.Is(err, ErrSandboxStillRunning) {
+		t.Fatalf("Rm of running: got %v, want wrap of ErrSandboxStillRunning", err)
+	}
+}
+
+// Unrecognised stderr surfaces the raw exit error untouched — the HTTP layer
+// keeps mapping that to 500.
+func TestClientStop_UnknownError_Untouched(t *testing.T) {
+	rawErr := errors.New("exit status 137")
+	r := &fakeRunner{
+		stderr: []byte("error: kernel said no\n"),
+		err:    rawErr,
+	}
+	c := NewClient("msb", r)
+
+	err := c.Stop(context.Background(), "anything")
+	if err == nil {
+		t.Fatal("Stop: got nil, want error")
+	}
+	if errors.Is(err, ErrSandboxNotFound) || errors.Is(err, ErrSandboxAlreadyExists) || errors.Is(err, ErrSandboxStillRunning) {
+		t.Errorf("unrecognised stderr was classified: %v", err)
 	}
 }
