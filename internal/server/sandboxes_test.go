@@ -300,3 +300,85 @@ func TestPostSandboxStart_AdapterErrorReturns500(t *testing.T) {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 }
+
+// Typed msb sentinels map to specific HTTP statuses: not-found → 404,
+// already-exists / still-running → 409.
+func TestStatusMapping_NotFound(t *testing.T) {
+	cases := []struct {
+		name string
+		req  *http.Request
+		set  func(*fakeMsb)
+	}{
+		{
+			name: "GET inspect",
+			req:  authed(http.MethodGet, "/sandboxes/nope"),
+			set:  func(f *fakeMsb) { f.inspectErr = msb.ErrSandboxNotFound },
+		},
+		{
+			name: "POST start",
+			req:  authed(http.MethodPost, "/sandboxes/nope/start"),
+			set:  func(f *fakeMsb) { f.startErr = msb.ErrSandboxNotFound },
+		},
+		{
+			name: "POST stop",
+			req:  authed(http.MethodPost, "/sandboxes/nope/stop"),
+			set:  func(f *fakeMsb) { f.stopErr = msb.ErrSandboxNotFound },
+		},
+		{
+			name: "DELETE",
+			req:  authed(http.MethodDelete, "/sandboxes/nope"),
+			set:  func(f *fakeMsb) { f.rmErr = msb.ErrSandboxNotFound },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeMsb{}
+			tc.set(client)
+			srv := New(Config{Token: testToken}, client)
+
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, tc.req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestStatusMapping_Conflict(t *testing.T) {
+	cases := []struct {
+		name string
+		req  func() *http.Request
+		set  func(*fakeMsb)
+	}{
+		{
+			name: "duplicate create",
+			req: func() *http.Request {
+				return authedJSON(http.MethodPost, "/sandboxes", `{"name":"probe","image":"alpine"}`)
+			},
+			set: func(f *fakeMsb) { f.createErr = msb.ErrSandboxAlreadyExists },
+		},
+		{
+			name: "rm running",
+			req: func() *http.Request {
+				return authed(http.MethodDelete, "/sandboxes/probe")
+			},
+			set: func(f *fakeMsb) { f.rmErr = msb.ErrSandboxStillRunning },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeMsb{}
+			tc.set(client)
+			srv := New(Config{Token: testToken}, client)
+
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, tc.req())
+
+			if rec.Code != http.StatusConflict {
+				t.Errorf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
