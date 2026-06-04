@@ -6,7 +6,23 @@ import (
 	"net/http"
 
 	"gopkg.in/yaml.v3"
+
+	"msb-manager/internal/msb"
 )
+
+func handleListVolumes(client MsbClient) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		volumes, err := client.VolumeList(r.Context())
+		if err != nil {
+			writeAdapterError(w, r, "list volumes", err)
+			return
+		}
+		if volumes == nil {
+			volumes = []msb.Volume{}
+		}
+		writeJSON(w, http.StatusOK, volumes)
+	}
+}
 
 // volumeRequest is the create-volume body. Two fields, two units of work — no
 // need for a dedicated package yet; if other endpoints grow similar shapes
