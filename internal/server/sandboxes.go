@@ -161,6 +161,8 @@ func statusForAdapterError(op string, err error) (int, string) {
 		return http.StatusConflict, "sandbox already exists"
 	case errors.Is(err, msb.ErrSandboxStillRunning):
 		return http.StatusConflict, "sandbox is still running"
+	case errors.Is(err, msb.ErrVolumeAlreadyExists):
+		return http.StatusConflict, "volume already exists"
 	default:
 		return http.StatusInternalServerError, op + " failed"
 	}
