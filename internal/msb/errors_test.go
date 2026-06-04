@@ -39,6 +39,12 @@ var classifyCases = []struct {
 		wantText: "myvol",
 	},
 	{
+		name:     "volume not found",
+		stderr:   "error: volume not found: nonexistent\n",
+		wantErr:  ErrVolumeNotFound,
+		wantText: "nonexistent",
+	},
+	{
 		name:    "unknown stays unknown",
 		stderr:  "error: something we have not seen before\n",
 		wantErr: nil, // classifyError returns nil for unrecognised → caller keeps the raw exit error

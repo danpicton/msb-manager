@@ -734,3 +734,35 @@ func TestGetVolumes_AdapterErrorReturns500(t *testing.T) {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 }
+
+// msb itself lets you remove a volume that's mounted by a running sandbox
+// (verified: msb v0.5.2 returns 0 even when the sandbox is using the volume).
+// msb-manager keeps the safer invariant by consulting its VolumeLock first.
+func TestDeleteVolume_ClaimedByRunningSandboxReturns409(t *testing.T) {
+	client := &fakeMsb{}
+	vlock := lock.New()
+	_ = vlock.Acquire("inuse", "holder")
+	srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodDelete, "/volumes/inuse"))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+	if client.gotVolumeRm != "" {
+		t.Error("VolumeRm invoked despite claim; lock should short-circuit")
+	}
+}
+
+func TestDeleteVolume_NotFoundReturns404(t *testing.T) {
+	client := &fakeMsb{volumeRmErr: msb.ErrVolumeNotFound}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodDelete, "/volumes/nonexistent"))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
