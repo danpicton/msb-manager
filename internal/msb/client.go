@@ -10,6 +10,7 @@ import (
 	"context"
 	"sort"
 	"strconv"
+	"sync"
 )
 
 // Runner is the subprocess boundary. Tests inject a fake; production wires up
@@ -19,11 +20,18 @@ type Runner interface {
 	Run(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
 }
 
-// Client wraps the msb CLI. It is safe for concurrent use; serialisation of
-// mutating commands (if needed — see step-0 verification 3) is a layer above.
+// Client wraps the msb CLI. Safe for concurrent use.
+//
+// msb v0.5.2 is not concurrent-safe under mutating commands (CONTEXT
+// verification #3 — parallel `msb create` left the supervisor unable to
+// service `msb ls`). Mutating methods (Create/Start/Stop/Rm) therefore take a
+// per-process mutex, serialising every msb invocation that changes state. Read
+// methods (List/Inspect) don't take the mutex — they're cheap and don't race
+// the supervisor against itself.
 type Client struct {
 	bin    string
 	runner Runner
+	mu     sync.Mutex
 }
 
 // NewClient binds the configured msb binary path to a Runner.
@@ -94,6 +102,8 @@ type PortMapping struct {
 // the sandbox and boots it in the background; a non-nil error here means the
 // create itself was rejected. Boot success is observable via Inspect.
 func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	args := buildCreateArgs(opts)
 	_, stderr, err := c.runner.Run(ctx, c.bin, args...)
 	return wrapRunErr(stderr, err)
@@ -139,16 +149,22 @@ func sortedKeys(m map[string]string) []string {
 // trivially uniform; if msb ever grows per-verb flags we care about, they
 // become per-method args structs the way Create did.
 func (c *Client) Start(ctx context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	_, stderr, err := c.runner.Run(ctx, c.bin, "start", name)
 	return wrapRunErr(stderr, err)
 }
 
 func (c *Client) Stop(ctx context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	_, stderr, err := c.runner.Run(ctx, c.bin, "stop", name)
 	return wrapRunErr(stderr, err)
 }
 
 func (c *Client) Rm(ctx context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	_, stderr, err := c.runner.Run(ctx, c.bin, "rm", name)
 	return wrapRunErr(stderr, err)
 }
