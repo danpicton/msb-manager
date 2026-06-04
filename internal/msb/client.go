@@ -168,3 +168,20 @@ func (c *Client) Rm(ctx context.Context, name string) error {
 	_, stderr, err := c.runner.Run(ctx, c.bin, "rm", name)
 	return wrapRunErr(stderr, err)
 }
+
+// VolumeCreate shells out to `msb volume create --size <size> <name>`. size is
+// passed through verbatim (e.g. "1G", "512M") — msb owns the unit grammar.
+func (c *Client) VolumeCreate(ctx context.Context, name, size string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, stderr, err := c.runner.Run(ctx, c.bin, "volume", "create", "--size", size, name)
+	return wrapRunErr(stderr, err)
+}
+
+// VolumeRm shells out to `msb volume rm <name>`.
+func (c *Client) VolumeRm(ctx context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, stderr, err := c.runner.Run(ctx, c.bin, "volume", "rm", name)
+	return wrapRunErr(stderr, err)
+}

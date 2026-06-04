@@ -18,6 +18,7 @@ var (
 	ErrSandboxNotFound      = errors.New("msb: sandbox not found")
 	ErrSandboxAlreadyExists = errors.New("msb: sandbox already exists")
 	ErrSandboxStillRunning  = errors.New("msb: sandbox still running")
+	ErrVolumeAlreadyExists  = errors.New("msb: volume already exists")
 )
 
 // classifyError inspects msb's stderr text and, if a known category is found,
@@ -46,4 +47,5 @@ var classifierTable = []struct {
 	{"sandbox not found:", ErrSandboxNotFound},
 	{"sandbox already exists:", ErrSandboxAlreadyExists},
 	{"sandbox still running:", ErrSandboxStillRunning},
+	{"volume already exists:", ErrVolumeAlreadyExists},
 }
