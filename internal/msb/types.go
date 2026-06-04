@@ -35,6 +35,14 @@ type Mount struct {
 	Name     string `json:"name,omitempty"`     // source volume name; set for Type=="Named"
 }
 
+// Volume is one row of `msb volume ls`: a named microsandbox volume.
+type Volume struct {
+	Name      string `json:"name"`
+	QuotaMiB  int    `json:"quota_mib"`
+	UsedBytes int64  `json:"used_bytes"`
+	CreatedAt string `json:"created_at"`
+}
+
 // VolumeNames returns the source names of every named-volume mount. This is
 // what the one-VM-per-volume lock keys on — derivable from msb state alone,
 // so the lock stays stateless (CONTEXT open verification #1, resolved).

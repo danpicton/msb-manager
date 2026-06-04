@@ -169,6 +169,16 @@ func (c *Client) Rm(ctx context.Context, name string) error {
 	return wrapRunErr(stderr, err)
 }
 
+// VolumeList shells out to `msb volume ls --format json`. Read-only, so it
+// doesn't take the mutating-commands mutex.
+func (c *Client) VolumeList(ctx context.Context) ([]Volume, error) {
+	stdout, stderr, err := c.runner.Run(ctx, c.bin, "volume", "ls", "--format", "json")
+	if err != nil {
+		return nil, wrapRunErr(stderr, err)
+	}
+	return parseVolumeList(stdout)
+}
+
 // VolumeCreate shells out to `msb volume create --size <size> <name>`. size is
 // passed through verbatim (e.g. "1G", "512M") — msb owns the unit grammar.
 func (c *Client) VolumeCreate(ctx context.Context, name, size string) error {
