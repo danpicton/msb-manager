@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -105,10 +106,24 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// writeAdapterError surfaces an adapter failure as a generic 500. msb's
-// stderr/exit-code → finer-grained status mapping (404 on not-found, etc.) is
-// the next refinement; right now every adapter error is opaque.
+// writeAdapterError surfaces an adapter failure as an HTTP response, mapping
+// recognised msb sentinels to specific statuses. Anything we don't recognise
+// stays 500 — surfacing arbitrary stderr text to clients would be a leak.
 func writeAdapterError(w http.ResponseWriter, r *http.Request, op string, err error) {
 	slog.ErrorContext(r.Context(), "adapter call failed", "op", op, "err", err.Error())
-	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": op + " failed"})
+	status, msg := statusForAdapterError(op, err)
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func statusForAdapterError(op string, err error) (int, string) {
+	switch {
+	case errors.Is(err, msb.ErrSandboxNotFound):
+		return http.StatusNotFound, "sandbox not found"
+	case errors.Is(err, msb.ErrSandboxAlreadyExists):
+		return http.StatusConflict, "sandbox already exists"
+	case errors.Is(err, msb.ErrSandboxStillRunning):
+		return http.StatusConflict, "sandbox is still running"
+	default:
+		return http.StatusInternalServerError, op + " failed"
+	}
 }

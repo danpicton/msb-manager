@@ -68,5 +68,15 @@ v1 is a **single trust domain** — any valid bearer token has full access to ev
 The stateless model rests on three unverified microsandbox behaviours. None block the design; each is a one-command check to do before building on it:
 
 1. **Does `msb inspect --format json` echo volume mounts and env?** ✅ *Resolved (msb v0.5.2, 2026-06-03).* Both surfaced. `config.env` as `[key, value]` tuples. `config.mounts` distinguishes the auto `Tmpfs` (`{type:"Tmpfs", guest:"/tmp", size_mib}`) from a **named volume** (`{type:"Named", name:"myvol", guest:"/workspace", readonly, host_permissions, stat_virtualization}`). The `name` field carries the volume source, so **project membership and the one-VM-per-volume check are derivable from msb state alone — the lock stays stateless** (no server-owned volume map). Fixtures: `internal/msb/testdata/{inspect,inspect_named_volume}.json`; helper `SandboxDetail.VolumeNames()`.
-2. **Is volume `--size` sparse/thin?** Create a 10G volume, check actual host disk usage. Determines whether quotas can be over-committed (see ADR-0004).
-3. **Is `msb` safe under concurrent invocation?** If not, msb-manager must serialise mutating commands (create/start/stop/rm).
+2. **Is volume `--size` sparse/thin?** ✅ *Resolved (msb v0.5.2, 2026-06-04).* Strongly sparse: a 10 GiB volume occupied 4 KiB on disk. Quotas can be over-committed freely (ADR-0004).
+3. **Is `msb` safe under concurrent invocation?** ❌ *Resolved (msb v0.5.2, 2026-06-04) — NO.* Two parallel `msb create` got stuck and left subsequent `msb ls` hanging (lock contention against the supervisor). msb-manager must **serialise mutating commands** (create/start/stop/rm) — step 5 design now includes a per-process global mutex in addition to the per-volume `O_EXCL` lock. (The TTY-suspend in interactive shells is a separate artifact and doesn't affect msb-manager, which uses `exec.Cmd` pipes.)
+
+## msb CLI surface (verified, v0.5.2, 2026-06-04)
+
+- **`--secret ENV=VALUE@HOST`** is present on `create`/`run`. Egress creds (step 6) are unblocked. Companion flag `--on-secret-violation` controls policy (`block`, `block-and-log`, `block-and-terminate`, `passthrough`).
+- **No SSH-pubkey install flag.** `msb ssh` exists for *connecting* but nothing on `create`/`run` for installing a key into the guest. Step 6 needs another path — a bootstrap script writing to `authorized_keys` is the obvious one.
+- **Error shape** (all exit 1, stderr `error: <category>: <details>`):
+  - `sandbox not found: <name>` → mapped to HTTP 404
+  - `sandbox already exists: <details>` → 409
+  - `sandbox still running: <details>` → 409 (rm of running sandbox)
+  - Anything else stays 500. Fixtures in `internal/msb/errors_test.go`; classifier in `internal/msb/errors.go`.
