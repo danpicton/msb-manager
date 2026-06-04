@@ -165,6 +165,19 @@ func TestClientVolumeCreate_InvokesMsbVolumeCreate(t *testing.T) {
 	}
 }
 
+func TestClientVolumeList_InvokesMsbVolumeLsJSON(t *testing.T) {
+	r := &fakeRunner{stdout: []byte("[]")}
+	c := NewClient("msb", r)
+
+	if _, err := c.VolumeList(context.Background()); err != nil {
+		t.Fatalf("VolumeList: unexpected error: %v", err)
+	}
+	wantArgs := []string{"volume", "ls", "--format", "json"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
 func TestClientVolumeRm_InvokesMsbVolumeRm(t *testing.T) {
 	r := &fakeRunner{}
 	c := NewClient("msb", r)

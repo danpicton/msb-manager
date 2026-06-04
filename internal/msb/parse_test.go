@@ -51,6 +51,30 @@ func TestParseListEmpty(t *testing.T) {
 	}
 }
 
+func TestParseVolumeList(t *testing.T) {
+	got, err := parseVolumeList(readFixture(t, "volume_ls.json"))
+	if err != nil {
+		t.Fatalf("parseVolumeList: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d volumes, want 2", len(got))
+	}
+	byName := map[string]Volume{}
+	for _, v := range got {
+		byName[v.Name] = v
+	}
+	v1, v2 := byName["v1"], byName["v2"]
+	if v1.QuotaMiB != 1024 || v2.QuotaMiB != 2048 {
+		t.Errorf("quotas wrong: v1=%d v2=%d (want 1024, 2048)", v1.QuotaMiB, v2.QuotaMiB)
+	}
+	if v1.UsedBytes != 0 || v2.UsedBytes != 0 {
+		t.Errorf("usage wrong: v1=%d v2=%d (want 0, 0)", v1.UsedBytes, v2.UsedBytes)
+	}
+	if v1.CreatedAt == "" || v2.CreatedAt == "" {
+		t.Error("CreatedAt missing")
+	}
+}
+
 // Snapshot test: the `msb inspect --format json` parser. This fixture answers
 // open verification #1 — inspect echoes both env and mounts.
 func TestParseInspect(t *testing.T) {
