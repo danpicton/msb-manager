@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"msb-manager/internal/lock"
 	"msb-manager/internal/msb"
 	"msb-manager/internal/spec"
 )
@@ -42,7 +43,7 @@ func handleInspectSandbox(client MsbClient) http.HandlerFunc {
 // anything larger than this is either a bug or an attack.
 const maxSpecBytes = 64 * 1024
 
-func handleCreateSandbox(client MsbClient) http.HandlerFunc {
+func handleCreateSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxSpecBytes+1))
 		if err != nil {
@@ -62,7 +63,16 @@ func handleCreateSandbox(client MsbClient) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+
+		// Claim any named volume before touching msb. On adapter failure we
+		// roll back so the volume isn't held by a sandbox that doesn't exist.
+		volumes := volumesFromSpec(s)
+		if err := vlock.AcquireMany(volumes, s.Name); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
 		if err := client.Create(r.Context(), s.ToCreateOpts()); err != nil {
+			vlock.Release(s.Name)
 			writeAdapterError(w, r, "create sandbox", err)
 			return
 		}
@@ -70,9 +80,24 @@ func handleCreateSandbox(client MsbClient) http.HandlerFunc {
 	}
 }
 
-func handleStartSandbox(client MsbClient) http.HandlerFunc {
+func handleStartSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := client.Start(r.Context(), r.PathValue("name")); err != nil {
+		name := r.PathValue("name")
+
+		// Look up the sandbox's volumes so we can claim them. A Start of a
+		// missing sandbox surfaces as msb.ErrSandboxNotFound -> 404.
+		detail, err := client.Inspect(r.Context(), name)
+		if err != nil {
+			writeAdapterError(w, r, "start sandbox", err)
+			return
+		}
+		volumes := detail.VolumeNames()
+		if err := vlock.AcquireMany(volumes, name); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := client.Start(r.Context(), name); err != nil {
+			vlock.Release(name)
 			writeAdapterError(w, r, "start sandbox", err)
 			return
 		}
@@ -80,24 +105,37 @@ func handleStartSandbox(client MsbClient) http.HandlerFunc {
 	}
 }
 
-func handleStopSandbox(client MsbClient) http.HandlerFunc {
+func handleStopSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := client.Stop(r.Context(), r.PathValue("name")); err != nil {
+		name := r.PathValue("name")
+		if err := client.Stop(r.Context(), name); err != nil {
 			writeAdapterError(w, r, "stop sandbox", err)
 			return
 		}
+		// Volume claim is tied to the sandbox being *running*; a stop frees it.
+		vlock.Release(name)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-func handleDeleteSandbox(client MsbClient) http.HandlerFunc {
+func handleDeleteSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := client.Rm(r.Context(), r.PathValue("name")); err != nil {
+		name := r.PathValue("name")
+		if err := client.Rm(r.Context(), name); err != nil {
 			writeAdapterError(w, r, "remove sandbox", err)
 			return
 		}
+		// Release any claim (no-op if the sandbox was already stopped).
+		vlock.Release(name)
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func volumesFromSpec(s spec.Spec) []string {
+	if s.Volume == nil {
+		return nil
+	}
+	return []string{s.Volume.Name}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
