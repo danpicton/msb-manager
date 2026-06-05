@@ -83,6 +83,7 @@ type CreateOpts struct {
 	Volume    *VolumeMount      // nil = unset
 	Env       map[string]string // nil/empty = no -e flags
 	Ports     []PortMapping     // nil/empty = no -p flags
+	Secrets   []Secret          // nil/empty = no --secret flags
 }
 
 // VolumeMount is a single named-volume mount: a microsandbox volume by Name,
@@ -96,6 +97,15 @@ type VolumeMount struct {
 type PortMapping struct {
 	Host  int
 	Guest int
+}
+
+// Secret is an egress credential injected into the guest as an env var, but
+// only released to outbound traffic destined for Host. msb enforces the
+// allow-list at the network policy layer.
+type Secret struct {
+	Key   string
+	Value string
+	Host  string
 }
 
 // Create shells out to `msb create -n <name> [opts...] <image>`. msb creates
@@ -128,6 +138,9 @@ func buildCreateArgs(opts CreateOpts) []string {
 	}
 	for _, p := range opts.Ports {
 		args = append(args, "-p", strconv.Itoa(p.Host)+":"+strconv.Itoa(p.Guest))
+	}
+	for _, s := range opts.Secrets {
+		args = append(args, "--secret", s.Key+"="+s.Value+"@"+s.Host)
 	}
 	args = append(args, opts.Image)
 	return args
