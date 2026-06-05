@@ -29,6 +29,7 @@ type Spec struct {
 	Env     map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 	Ports   []PortMapping     `yaml:"ports,omitempty" json:"ports,omitempty"`
 	Secrets []Secret          `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	SSHKeys []string          `yaml:"ssh_keys,omitempty" json:"ssh_keys,omitempty"`
 }
 
 // Volume is a single named-volume mount. (Multi-volume creates aren't
@@ -85,6 +86,7 @@ func (s Spec) ToCreateOpts() msb.CreateOpts {
 	for _, sec := range s.Secrets {
 		opts.Secrets = append(opts.Secrets, msb.Secret{Key: sec.Key, Value: sec.Value, Host: sec.Host})
 	}
+	opts.SSHKeys = append(opts.SSHKeys, s.SSHKeys...)
 	return opts
 }
 
@@ -119,6 +121,16 @@ func (s Spec) Validate() error {
 		}
 		if p.Guest < 1 || p.Guest > 65535 {
 			return fmt.Errorf("spec: ports[%d].guest out of range (1-65535), got %d", i, p.Guest)
+		}
+	}
+	for i, k := range s.SSHKeys {
+		if k == "" {
+			return fmt.Errorf("spec: ssh_keys[%d] is empty", i)
+		}
+		// Keys are single-line OpenSSH format; a newline or NUL would either
+		// inject extra lines into authorized_keys or truncate the entry.
+		if strings.ContainsAny(k, "\n\x00") {
+			return fmt.Errorf("spec: ssh_keys[%d] contains newline or NUL byte", i)
 		}
 	}
 	for i, sec := range s.Secrets {
