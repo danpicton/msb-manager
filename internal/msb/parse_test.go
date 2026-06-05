@@ -1,6 +1,8 @@
 package msb
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,6 +50,28 @@ func TestParseListEmpty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("got %d sandboxes, want 0", len(got))
+	}
+}
+
+// msb v0.5.2 includes secret values in plaintext under config.network.secrets
+// in `msb inspect --format json`. parseInspect MUST NOT extract that subtree:
+// it would round-trip the secret to anyone who can call GET /sandboxes/{name}.
+// This test reads a fixture with a populated secret block and asserts the
+// value string is nowhere in the parsed-then-re-encoded SandboxDetail.
+func TestParseInspect_DoesNotLeakSecretValue(t *testing.T) {
+	const canary = "ghp_fake_LEAK_ME_IF_YOU_CAN"
+
+	got, err := parseInspect(readFixture(t, "inspect_with_secret.json"))
+	if err != nil {
+		t.Fatalf("parseInspect: %v", err)
+	}
+
+	out, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	if bytes.Contains(out, []byte(canary)) {
+		t.Fatalf("secret value leaked through SandboxDetail JSON: %s", out)
 	}
 }
 

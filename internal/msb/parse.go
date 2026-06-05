@@ -36,6 +36,12 @@ func parseList(data []byte) ([]Sandbox, error) {
 
 // inspectDTO mirrors the nested `msb inspect --format json` shape closely
 // enough to extract what we need; unmapped fields are ignored.
+//
+// SECURITY NOTE: do NOT add a field for `config.network.secrets`. msb v0.5.2
+// echoes the secret value in plaintext under that subtree, and our HTTP
+// /sandboxes/{name} re-encodes whatever ends up in SandboxDetail. Keeping the
+// secrets block unparsed makes the leak impossible at the type level. See
+// TestParseInspect_DoesNotLeakSecretValue for the regression guard.
 type inspectDTO struct {
 	Name      string `json:"name"`
 	Status    string `json:"status"`
