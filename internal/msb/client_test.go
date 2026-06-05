@@ -91,6 +91,10 @@ func TestClientCreate_FullOpts(t *testing.T) {
 		Volume:    &VolumeMount{Name: "myvol", Mount: "/workspace"},
 		Env:       map[string]string{"FOO": "bar", "PATH": "/usr/bin"},
 		Ports:     []PortMapping{{Host: 8080, Guest: 80}, {Host: 9090, Guest: 90}},
+		Secrets: []Secret{
+			{Key: "GITHUB_TOKEN", Value: "ghp_x", Host: "github.com"},
+			{Key: "OPENAI_KEY", Value: "sk-y", Host: "api.openai.com"},
+		},
 	}
 	if err := c.Create(context.Background(), opts); err != nil {
 		t.Fatalf("Create: unexpected error: %v", err)
@@ -106,6 +110,8 @@ func TestClientCreate_FullOpts(t *testing.T) {
 		"-e", "PATH=/usr/bin",
 		"-p", "8080:80",
 		"-p", "9090:90",
+		"--secret", "GITHUB_TOKEN=ghp_x@github.com",
+		"--secret", "OPENAI_KEY=sk-y@api.openai.com",
 		"alpine",
 	}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
