@@ -74,6 +74,8 @@ secrets:
   - key: GITHUB_TOKEN
     value: ghp_x
     host: github.com
+ssh_keys:
+  - ssh-ed25519 AAAAedkey dan@laptop
 `)
 	s, err := Parse(body)
 	if err != nil {
@@ -98,6 +100,9 @@ secrets:
 	if len(s.Secrets) != 1 || s.Secrets[0].Key != "GITHUB_TOKEN" ||
 		s.Secrets[0].Value != "ghp_x" || s.Secrets[0].Host != "github.com" {
 		t.Errorf("Secrets = %+v, want one GITHUB_TOKEN@github.com", s.Secrets)
+	}
+	if len(s.SSHKeys) != 1 || s.SSHKeys[0] != "ssh-ed25519 AAAAedkey dan@laptop" {
+		t.Errorf("SSHKeys = %+v, want one ed25519 line", s.SSHKeys)
 	}
 
 	if err := s.Validate(); err != nil {
@@ -173,6 +178,19 @@ func TestValidate_SecretFieldsRejectSeparatorChars(t *testing.T) {
 	}
 }
 
+func TestValidate_SSHKeysRejectMalformedLines(t *testing.T) {
+	cases := []Spec{
+		{Name: "x", Image: "alpine", SSHKeys: []string{""}},
+		{Name: "x", Image: "alpine", SSHKeys: []string{"ssh-ed25519 AAAA\nmalicious"}},
+		{Name: "x", Image: "alpine", SSHKeys: []string{"ssh-ed25519 AAAA\x00trunc"}},
+	}
+	for _, s := range cases {
+		if err := s.Validate(); err == nil {
+			t.Errorf("Validate(%+v): got nil, want error", s)
+		}
+	}
+}
+
 func TestParse_RejectsUnknownFields(t *testing.T) {
 	body := []byte(`
 name: voltest
@@ -196,6 +214,7 @@ func TestToCreateOpts_MapsAllFields(t *testing.T) {
 		Secrets: []Secret{
 			{Key: "GITHUB_TOKEN", Value: "ghp_x", Host: "github.com"},
 		},
+		SSHKeys: []string{"ssh-ed25519 AAAAedkey dan@laptop"},
 	}
 	opts := s.ToCreateOpts()
 
@@ -217,5 +236,8 @@ func TestToCreateOpts_MapsAllFields(t *testing.T) {
 	if len(opts.Secrets) != 1 || opts.Secrets[0].Key != "GITHUB_TOKEN" ||
 		opts.Secrets[0].Value != "ghp_x" || opts.Secrets[0].Host != "github.com" {
 		t.Errorf("Secrets = %+v, want one GITHUB_TOKEN@github.com", opts.Secrets)
+	}
+	if len(opts.SSHKeys) != 1 || opts.SSHKeys[0] != "ssh-ed25519 AAAAedkey dan@laptop" {
+		t.Errorf("SSHKeys = %+v, want one ed25519 line", opts.SSHKeys)
 	}
 }
