@@ -10,6 +10,7 @@ import (
 	"context"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -84,6 +85,7 @@ type CreateOpts struct {
 	Env       map[string]string // nil/empty = no -e flags
 	Ports     []PortMapping     // nil/empty = no -p flags
 	Secrets   []Secret          // nil/empty = no --secret flags
+	SSHKeys   []string          // OpenSSH-format pubkey lines; installed via --script
 }
 
 // VolumeMount is a single named-volume mount: a microsandbox volume by Name,
@@ -142,8 +144,39 @@ func buildCreateArgs(opts CreateOpts) []string {
 	for _, s := range opts.Secrets {
 		args = append(args, "--secret", s.Key+"="+s.Value+"@"+s.Host)
 	}
+	if len(opts.SSHKeys) > 0 {
+		args = append(args, "--script", "install-ssh-keys="+sshKeysScript(opts.SSHKeys))
+	}
 	args = append(args, opts.Image)
 	return args
+}
+
+// sshKeysScript builds a POSIX shell snippet that overwrites
+// /root/.ssh/authorized_keys with the given keys (one per line), at the
+// canonical 700/600 modes. Each key is single-quoted so an embedded comment
+// containing spaces, $vars, backticks, or single quotes can't escape the
+// string. msb runs this via --script during create.
+func sshKeysScript(keys []string) string {
+	var sb strings.Builder
+	sb.WriteString("set -eu\n")
+	sb.WriteString("mkdir -p /root/.ssh\n")
+	sb.WriteString("chmod 700 /root/.ssh\n")
+	sb.WriteString("{\n")
+	for _, k := range keys {
+		sb.WriteString("printf '%s\\n' ")
+		sb.WriteString(shellSingleQuote(k))
+		sb.WriteByte('\n')
+	}
+	sb.WriteString("} > /root/.ssh/authorized_keys\n")
+	sb.WriteString("chmod 600 /root/.ssh/authorized_keys\n")
+	return sb.String()
+}
+
+// shellSingleQuote wraps s in single quotes, replacing any embedded single
+// quote with the standard '\'' close-escape-open sequence — the only way to
+// embed a literal ' inside a POSIX single-quoted string.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func sortedKeys(m map[string]string) []string {
