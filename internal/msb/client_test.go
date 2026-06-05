@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -72,6 +73,50 @@ func TestClientCreate_InvokesMsbCreate(t *testing.T) {
 	wantArgs := []string{"create", "-n", "voltest", "alpine"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
+func TestClientCreate_WithSSHKeys(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+
+	keys := []string{
+		"ssh-ed25519 AAAAedkey dan@laptop",
+		"ssh-rsa AAAArsakey 'with quotes'", // a comment containing characters that would break naive shell quoting
+	}
+	if err := c.Create(context.Background(), CreateOpts{
+		Name: "x", Image: "alpine", SSHKeys: keys,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Args must include exactly one --script flag for ssh keys.
+	scriptIdx := -1
+	for i, a := range r.gotArgs {
+		if a == "--script" {
+			scriptIdx = i
+			break
+		}
+	}
+	if scriptIdx < 0 {
+		t.Fatalf("--script flag not found in args: %v", r.gotArgs)
+	}
+	flagVal := r.gotArgs[scriptIdx+1]
+	const namePrefix = "install-ssh-keys="
+	if !strings.HasPrefix(flagVal, namePrefix) {
+		t.Errorf("--script value = %q, want prefix %q", flagVal, namePrefix)
+	}
+	body := strings.TrimPrefix(flagVal, namePrefix)
+	if !strings.Contains(body, "/root/.ssh/authorized_keys") {
+		t.Errorf("script body does not target /root/.ssh/authorized_keys: %s", body)
+	}
+	// Both keys, single-quoted, should appear verbatim. The second key's
+	// single-quote becomes the standard '\'' escape sequence.
+	for _, k := range keys {
+		quoted := "'" + strings.ReplaceAll(k, "'", `'\''`) + "'"
+		if !strings.Contains(body, quoted) {
+			t.Errorf("body missing safely-quoted key:\n  want substring: %s\n  body: %s", quoted, body)
+		}
 	}
 }
 
