@@ -70,6 +70,10 @@ ports:
     guest: 80
   - host: 9090
     guest: 90
+secrets:
+  - key: GITHUB_TOKEN
+    value: ghp_x
+    host: github.com
 `)
 	s, err := Parse(body)
 	if err != nil {
@@ -90,6 +94,10 @@ ports:
 	}
 	if len(s.Ports) != 2 || s.Ports[0].Host != 8080 || s.Ports[0].Guest != 80 {
 		t.Errorf("Ports = %+v, want [8080:80, 9090:90]", s.Ports)
+	}
+	if len(s.Secrets) != 1 || s.Secrets[0].Key != "GITHUB_TOKEN" ||
+		s.Secrets[0].Value != "ghp_x" || s.Secrets[0].Host != "github.com" {
+		t.Errorf("Secrets = %+v, want one GITHUB_TOKEN@github.com", s.Secrets)
 	}
 
 	if err := s.Validate(); err != nil {
@@ -135,6 +143,36 @@ func TestValidate_PortsInRange(t *testing.T) {
 	}
 }
 
+func TestValidate_SecretsRequireAllFields(t *testing.T) {
+	cases := []Spec{
+		{Name: "x", Image: "alpine", Secrets: []Secret{{Value: "v", Host: "h"}}}, // no key
+		{Name: "x", Image: "alpine", Secrets: []Secret{{Key: "K", Host: "h"}}},   // no value
+		{Name: "x", Image: "alpine", Secrets: []Secret{{Key: "K", Value: "v"}}},  // no host
+	}
+	for _, s := range cases {
+		if err := s.Validate(); err == nil {
+			t.Errorf("Validate(%+v): got nil, want error", s)
+		}
+	}
+}
+
+// The key/value/host string assembles into "KEY=VALUE@HOST"; any of those
+// characters appearing inside the key or host would make the arg ambiguous to
+// msb. (Value can contain '=' fine — only first '=' is the separator on msb's
+// side; '@' inside value is also msb's call. We refuse the structural ones.)
+func TestValidate_SecretFieldsRejectSeparatorChars(t *testing.T) {
+	cases := []Spec{
+		{Name: "x", Image: "alpine", Secrets: []Secret{{Key: "K=Y", Value: "v", Host: "h"}}}, // = in key
+		{Name: "x", Image: "alpine", Secrets: []Secret{{Key: "K@Y", Value: "v", Host: "h"}}}, // @ in key
+		{Name: "x", Image: "alpine", Secrets: []Secret{{Key: "K", Value: "v", Host: "h@i"}}}, // @ in host
+	}
+	for _, s := range cases {
+		if err := s.Validate(); err == nil {
+			t.Errorf("Validate(%+v): got nil, want error", s)
+		}
+	}
+}
+
 func TestParse_RejectsUnknownFields(t *testing.T) {
 	body := []byte(`
 name: voltest
@@ -155,6 +193,9 @@ func TestToCreateOpts_MapsAllFields(t *testing.T) {
 		Volume: &Volume{Name: "myvol", Mount: "/workspace"},
 		Env:    map[string]string{"FOO": "bar"},
 		Ports:  []PortMapping{{Host: 8080, Guest: 80}},
+		Secrets: []Secret{
+			{Key: "GITHUB_TOKEN", Value: "ghp_x", Host: "github.com"},
+		},
 	}
 	opts := s.ToCreateOpts()
 
@@ -172,5 +213,9 @@ func TestToCreateOpts_MapsAllFields(t *testing.T) {
 	}
 	if len(opts.Ports) != 1 || opts.Ports[0].Host != 8080 || opts.Ports[0].Guest != 80 {
 		t.Errorf("Ports = %+v, want [8080:80]", opts.Ports)
+	}
+	if len(opts.Secrets) != 1 || opts.Secrets[0].Key != "GITHUB_TOKEN" ||
+		opts.Secrets[0].Value != "ghp_x" || opts.Secrets[0].Host != "github.com" {
+		t.Errorf("Secrets = %+v, want one GITHUB_TOKEN@github.com", opts.Secrets)
 	}
 }
