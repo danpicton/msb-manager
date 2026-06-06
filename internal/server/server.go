@@ -56,11 +56,27 @@ func NewWithLock(cfg Config, client MsbClient, vlock *lock.VolumeLock) http.Hand
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", handleHealthz)
+	root.HandleFunc("GET /readyz", handleReadyz(client))
 	root.Handle("/", requireBearer(cfg.Token, protected))
 	return root
 }
 
-// handleHealthz reports liveness. It is the one unauthenticated endpoint.
+// handleHealthz reports liveness — the http.Server is accepting requests.
+// Cheap and shallow; deliberately does not consult msb.
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleReadyz reports readiness — msb itself is reachable and serving. A
+// successful `msb ls` is the cheapest end-to-end signal that the supervisor
+// is up and the API can do real work. Returns 503 when msb errors so probes
+// (Caddy active health checks, systemd) treat this instance as not-ready.
+func handleReadyz(client MsbClient) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, err := client.List(r.Context()); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}
 }
