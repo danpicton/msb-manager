@@ -165,6 +165,10 @@ func statusForAdapterError(op string, err error) (int, string) {
 		return http.StatusConflict, "volume already exists"
 	case errors.Is(err, msb.ErrVolumeNotFound):
 		return http.StatusNotFound, "volume not found"
+	case errors.Is(err, msb.ErrSnapshotAlreadyExists):
+		return http.StatusConflict, "snapshot already exists"
+	case errors.Is(err, msb.ErrSnapshotNotFound):
+		return http.StatusNotFound, "snapshot not found"
 	default:
 		return http.StatusInternalServerError, op + " failed"
 	}

@@ -35,6 +35,10 @@ type fakeMsb struct {
 	volumeListErr    error
 	volumeCreateErr  error
 	volumeRmErr      error
+	snapshotListOut   []msb.Snapshot
+	snapshotListErr   error
+	snapshotCreateErr error
+	snapshotRmErr     error
 
 	gotInspectName     string
 	gotCreateOpts      msb.CreateOpts
@@ -43,6 +47,8 @@ type fakeMsb struct {
 	gotRmName          string
 	gotVolumeCreate    [2]string // name, size
 	gotVolumeRm        string
+	gotSnapshotCreate  snapshotCall
+	gotSnapshotRm      string
 }
 
 func (f *fakeMsb) List(_ context.Context) ([]msb.Sandbox, error) {
@@ -78,6 +84,23 @@ func (f *fakeMsb) VolumeCreate(_ context.Context, name, size string) error {
 func (f *fakeMsb) VolumeRm(_ context.Context, name string) error {
 	f.gotVolumeRm = name
 	return f.volumeRmErr
+}
+func (f *fakeMsb) SnapshotList(_ context.Context) ([]msb.Snapshot, error) {
+	return f.snapshotListOut, f.snapshotListErr
+}
+func (f *fakeMsb) SnapshotCreate(_ context.Context, from, dest string, labels map[string]string, force bool) error {
+	f.gotSnapshotCreate = snapshotCall{From: from, Dest: dest, Labels: labels, Force: force}
+	return f.snapshotCreateErr
+}
+func (f *fakeMsb) SnapshotRm(_ context.Context, name string) error {
+	f.gotSnapshotRm = name
+	return f.snapshotRmErr
+}
+
+type snapshotCall struct {
+	From, Dest string
+	Labels     map[string]string
+	Force      bool
 }
 
 func authed(method, path string) *http.Request {
@@ -761,6 +784,140 @@ func TestDeleteVolume_NotFoundReturns404(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, authed(http.MethodDelete, "/volumes/nonexistent"))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Snapshot endpoints ---
+
+func TestGetSnapshots_ReturnsJSONFromMsbSnapshotLs(t *testing.T) {
+	parent := "sha256:parentdigest"
+	client := &fakeMsb{snapshotListOut: []msb.Snapshot{
+		{
+			Name: "probe-snap", Digest: "sha256:digestx", ImageRef: "alpine",
+			Format: "raw", CreatedAt: "2026-06-06 07:52:18",
+			ArtifactPath: "/x/probe-snap", ParentDigest: &parent, SizeBytes: 4294967296,
+		},
+	}}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodGet, "/snapshots"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got []msb.Snapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response not JSON list: %v; body=%s", err, rec.Body.String())
+	}
+	if len(got) != 1 || got[0].Name != "probe-snap" || got[0].SizeBytes != 4294967296 {
+		t.Errorf("body = %+v, want one probe-snap entry", got)
+	}
+}
+
+func TestGetSnapshots_EmptyReturnsJSONArray(t *testing.T) {
+	srv := New(Config{Token: testToken}, &fakeMsb{})
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodGet, "/snapshots"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
+		t.Errorf("body = %q, want %q", body, "[]")
+	}
+}
+
+func TestPostSnapshots_CreatesAndReturns201(t *testing.T) {
+	client := &fakeMsb{}
+	srv := New(Config{Token: testToken}, client)
+
+	body := `from: probe
+name: probe-snap
+labels:
+  team: ops
+  msb.parent: test-parent
+force: true
+`
+	req := httptest.NewRequest(http.MethodPost, "/snapshots", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Content-Type", "application/yaml")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	got := client.gotSnapshotCreate
+	if got.From != "probe" || got.Dest != "probe-snap" || !got.Force {
+		t.Errorf("Create call = %+v, want from=probe dest=probe-snap force=true", got)
+	}
+	if got.Labels["team"] != "ops" || got.Labels["msb.parent"] != "test-parent" {
+		t.Errorf("Labels = %+v, want team+msb.parent", got.Labels)
+	}
+}
+
+func TestPostSnapshots_RequiresFromAndName(t *testing.T) {
+	cases := []string{
+		`{}`,
+		`{"from":"probe"}`,
+		`{"name":"snap"}`,
+	}
+	for _, body := range cases {
+		client := &fakeMsb{}
+		srv := New(Config{Token: testToken}, client)
+
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/snapshots", body))
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status = %d, want 400", body, rec.Code)
+		}
+		if client.gotSnapshotCreate.From != "" {
+			t.Errorf("body %s: SnapshotCreate invoked despite bad request", body)
+		}
+	}
+}
+
+func TestPostSnapshots_AlreadyExistsReturns409(t *testing.T) {
+	client := &fakeMsb{snapshotCreateErr: msb.ErrSnapshotAlreadyExists}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/snapshots",
+		`{"from":"probe","name":"probe-snap"}`))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+}
+
+func TestDeleteSnapshot_InvokesAndReturns204(t *testing.T) {
+	client := &fakeMsb{}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodDelete, "/snapshots/probe-snap"))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	if client.gotSnapshotRm != "probe-snap" {
+		t.Errorf("SnapshotRm called with %q, want %q", client.gotSnapshotRm, "probe-snap")
+	}
+}
+
+func TestDeleteSnapshot_NotFoundReturns404(t *testing.T) {
+	client := &fakeMsb{snapshotRmErr: msb.ErrSnapshotNotFound}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodDelete, "/snapshots/missing"))
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())

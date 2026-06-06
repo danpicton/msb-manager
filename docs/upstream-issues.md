@@ -79,3 +79,39 @@ Silent success; volume registry and running-sandbox mount config diverge.
 `DELETE /volumes/{name}` consults an in-memory VolumeLock and returns
 **409 Conflict** when a running sandbox holds the claim, naming the holder.
 See `internal/server/volumes.go`.
+
+---
+
+## 3. `msb snapshot inspect` has no `--format json`
+
+`msb snapshot ls`, `msb ls`, `msb volume ls`, and `msb inspect` all accept
+`--format json`. `msb snapshot inspect` does not — and labels (used for the
+`msb.parent` lineage relation, among others) appear to be only surfaced
+through `inspect`, not through `ls`.
+
+### Repro
+
+```bash
+msb snapshot inspect --help 2>&1 | grep format
+# no --format option
+msb snapshot inspect probe-snap --format json
+# error: unexpected argument '--format' found
+```
+
+### Expected
+
+`msb snapshot inspect --format json <snap>` returns a structured JSON
+document including the snapshot's labels — at minimum a `labels` map
+keyed by name.
+
+### Actual
+
+No JSON output; labels are not present in `msb snapshot ls --format json`
+either.
+
+### msb-manager workaround
+
+`GET /snapshots/{name}` is deliberately **not implemented** until a JSON
+inspect surface lands; parsing the text output would be brittle and a
+violation of ADR-0002's "isolate parsing in one adapter module" guidance.
+`GET /snapshots` returns the populated `ls --format json` rows minus labels.

@@ -30,6 +30,9 @@ type MsbClient interface {
 	VolumeList(ctx context.Context) ([]msb.Volume, error)
 	VolumeCreate(ctx context.Context, name, size string) error
 	VolumeRm(ctx context.Context, name string) error
+	SnapshotList(ctx context.Context) ([]msb.Snapshot, error)
+	SnapshotCreate(ctx context.Context, from, dest string, labels map[string]string, force bool) error
+	SnapshotRm(ctx context.Context, name string) error
 }
 
 // New builds the control-plane HTTP handler with a fresh empty VolumeLock.
@@ -53,6 +56,9 @@ func NewWithLock(cfg Config, client MsbClient, vlock *lock.VolumeLock) http.Hand
 	protected.HandleFunc("GET /volumes", handleListVolumes(client))
 	protected.HandleFunc("POST /volumes", handleCreateVolume(client))
 	protected.HandleFunc("DELETE /volumes/{name}", handleDeleteVolume(client, vlock))
+	protected.HandleFunc("GET /snapshots", handleListSnapshots(client))
+	protected.HandleFunc("POST /snapshots", handleCreateSnapshot(client))
+	protected.HandleFunc("DELETE /snapshots/{name}", handleDeleteSnapshot(client))
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", handleHealthz)
