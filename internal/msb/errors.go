@@ -54,4 +54,7 @@ var classifierTable = []struct {
 	{"volume not found:", ErrVolumeNotFound},
 	{"snapshot already exists:", ErrSnapshotAlreadyExists},
 	{"snapshot not found:", ErrSnapshotNotFound},
+	// `msb logs` uses non-standard wording when the sandbox doesn't exist;
+	// fold it into the same sentinel so HTTP still maps to 404.
+	{"no logs directory for sandbox", ErrSandboxNotFound},
 }

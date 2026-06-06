@@ -50,6 +50,22 @@ type Snapshot struct {
 	SizeBytes    int64   `json:"size_bytes"`
 }
 
+// Metrics is the JSON object returned by `msb metrics <name> --format json`:
+// a point-in-time snapshot of resource usage. uptime_secs and cpu_percent
+// are floats; byte counts are int64s; timestamp is RFC3339.
+type Metrics struct {
+	Name             string  `json:"name"`
+	CPUPercent       float64 `json:"cpu_percent"`
+	MemoryBytes      int64   `json:"memory_bytes"`
+	MemoryLimitBytes int64   `json:"memory_limit_bytes"`
+	DiskReadBytes    int64   `json:"disk_read_bytes"`
+	DiskWriteBytes   int64   `json:"disk_write_bytes"`
+	NetRxBytes       int64   `json:"net_rx_bytes"`
+	NetTxBytes       int64   `json:"net_tx_bytes"`
+	UptimeSecs       float64 `json:"uptime_secs"`
+	Timestamp        string  `json:"timestamp"`
+}
+
 // Volume is one row of `msb volume ls`: a named microsandbox volume.
 type Volume struct {
 	Name      string `json:"name"`

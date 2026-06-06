@@ -5,6 +5,16 @@ import (
 	"fmt"
 )
 
+// parseMetrics decodes `msb metrics <name> --format json` output (a single
+// point-in-time snapshot of one sandbox's resource usage).
+func parseMetrics(data []byte) (Metrics, error) {
+	var m Metrics
+	if err := json.Unmarshal(data, &m); err != nil {
+		return Metrics{}, fmt.Errorf("parse msb metrics: %w", err)
+	}
+	return m, nil
+}
+
 // parseSnapshotList decodes `msb snapshot ls --format json` output. The CLI
 // shape maps 1:1, so a direct struct decode suffices.
 func parseSnapshotList(data []byte) ([]Snapshot, error) {
