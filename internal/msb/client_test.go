@@ -77,12 +77,14 @@ func TestClientCreate_InvokesMsbCreate(t *testing.T) {
 }
 
 func TestClientCreate_WithSSHKeys(t *testing.T) {
-	r := &fakeRunner{}
+	// Record every Run invocation so we can assert both create + exec happen.
+	var calls [][]string
+	r := &recordingRunner{calls: &calls}
 	c := NewClient("msb", r)
 
 	keys := []string{
 		"ssh-ed25519 AAAAedkey dan@laptop",
-		"ssh-rsa AAAArsakey 'with quotes'", // a comment containing characters that would break naive shell quoting
+		"ssh-rsa AAAArsakey 'with quotes'",
 	}
 	if err := c.Create(context.Background(), CreateOpts{
 		Name: "x", Image: "alpine", SSHKeys: keys,
@@ -90,34 +92,91 @@ func TestClientCreate_WithSSHKeys(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Args must include exactly one --script flag for ssh keys.
+	if len(calls) != 2 {
+		t.Fatalf("got %d msb invocations, want 2 (create + exec install-ssh-keys); calls=%v",
+			len(calls), calls)
+	}
+
+	// 1) create … --script-raw install-ssh-keys=<body>
+	createArgs := calls[0]
 	scriptIdx := -1
-	for i, a := range r.gotArgs {
-		if a == "--script" {
+	for i, a := range createArgs {
+		if a == "--script-raw" {
 			scriptIdx = i
 			break
 		}
 	}
 	if scriptIdx < 0 {
-		t.Fatalf("--script flag not found in args: %v", r.gotArgs)
+		t.Fatalf("--script-raw not in create args: %v", createArgs)
 	}
-	flagVal := r.gotArgs[scriptIdx+1]
+	flagVal := createArgs[scriptIdx+1]
 	const namePrefix = "install-ssh-keys="
 	if !strings.HasPrefix(flagVal, namePrefix) {
-		t.Errorf("--script value = %q, want prefix %q", flagVal, namePrefix)
+		t.Errorf("--script-raw value = %q, want prefix %q", flagVal, namePrefix)
 	}
 	body := strings.TrimPrefix(flagVal, namePrefix)
-	if !strings.Contains(body, "/root/.ssh/authorized_keys") {
-		t.Errorf("script body does not target /root/.ssh/authorized_keys: %s", body)
+	// --script-raw skips shebang insertion; we must add our own.
+	if !strings.HasPrefix(body, "#!/bin/sh\n") {
+		t.Errorf("script body missing #!/bin/sh shebang: %s", body)
 	}
-	// Both keys, single-quoted, should appear verbatim. The second key's
-	// single-quote becomes the standard '\'' escape sequence.
+	if !strings.Contains(body, "/root/.ssh/authorized_keys") {
+		t.Errorf("script body does not target authorized_keys: %s", body)
+	}
 	for _, k := range keys {
 		quoted := "'" + strings.ReplaceAll(k, "'", `'\''`) + "'"
 		if !strings.Contains(body, quoted) {
-			t.Errorf("body missing safely-quoted key:\n  want substring: %s\n  body: %s", quoted, body)
+			t.Errorf("body missing quoted key %q", k)
 		}
 	}
+
+	// 2) exec x install-ssh-keys
+	wantExec := []string{"exec", "x", "install-ssh-keys"}
+	if !reflect.DeepEqual(calls[1], wantExec) {
+		t.Errorf("second invocation = %v, want %v", calls[1], wantExec)
+	}
+}
+
+// If installing the ssh keys fails, the partial-state sandbox is removed so
+// Create has atomic semantics from the caller's view.
+func TestClientCreate_SSHKeyInstallFailureRollsBack(t *testing.T) {
+	var calls [][]string
+	r := &recordingRunner{
+		calls: &calls,
+		// First call (create) succeeds; second (exec install) fails; third (rm) succeeds.
+		errs: []error{nil, errors.New("exit status 1"), nil},
+	}
+	c := NewClient("msb", r)
+
+	err := c.Create(context.Background(), CreateOpts{
+		Name: "x", Image: "alpine", SSHKeys: []string{"ssh-ed25519 AAAA"},
+	})
+	if err == nil {
+		t.Fatal("Create: got nil, want install-failure error")
+	}
+	if len(calls) != 3 {
+		t.Fatalf("got %d calls, want 3 (create, exec, rm); calls=%v", len(calls), calls)
+	}
+	// Final call must be a force-rm of the sandbox we just created.
+	wantRm := []string{"rm", "-f", "x"}
+	if !reflect.DeepEqual(calls[2], wantRm) {
+		t.Errorf("rollback call = %v, want %v", calls[2], wantRm)
+	}
+}
+
+type recordingRunner struct {
+	calls *[][]string
+	errs  []error // optional: per-call exit errors
+	idx   int
+}
+
+func (rr *recordingRunner) Run(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+	*rr.calls = append(*rr.calls, append([]string(nil), args...))
+	var err error
+	if rr.idx < len(rr.errs) {
+		err = rr.errs[rr.idx]
+	}
+	rr.idx++
+	return nil, nil, err
 }
 
 // Spec→msb-args translation, the high-value pure-function seam called out in
