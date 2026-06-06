@@ -79,7 +79,8 @@ func wrapRunErr(stderr []byte, err error) error {
 // snapshot-source at step 7.
 type CreateOpts struct {
 	Name      string
-	Image     string
+	Image     string            // mutually exclusive with Snapshot
+	Snapshot  string            // mutually exclusive with Image; dispatches to `msb run -d --snapshot`
 	CPUs      int               // 0 = unset, don't pass --cpus
 	MemoryMiB int               // 0 = unset, don't pass --memory
 	Volume    *VolumeMount      // nil = unset
@@ -144,8 +145,21 @@ func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 // buildCreateArgs is the pure spec→msb-args translation (CLAUDE.md's
 // highest-value test seam). Env entries are emitted in sorted key order so the
 // arg list is deterministic — handy for tests, audit logs, and reasoning.
+//
+// Two dispatch paths:
+//   - Image set     → `msb create -n <name> [opts...] <image>`
+//   - Snapshot set  → `msb run -d --snapshot <name> -n <name> [opts...]`
+//
+// msb v0.5.2 only accepts --snapshot on `run`, not `create`; -d (--detach)
+// gives `run` the same "boot in background, print name" semantics as create.
+// Validation (mutual exclusion of Image/Snapshot) lives in the spec layer.
 func buildCreateArgs(opts CreateOpts) []string {
-	args := []string{"create", "-n", opts.Name}
+	var args []string
+	if opts.Snapshot != "" {
+		args = []string{"run", "-d", "--snapshot", opts.Snapshot, "-n", opts.Name}
+	} else {
+		args = []string{"create", "-n", opts.Name}
+	}
 	if opts.CPUs > 0 {
 		args = append(args, "-c", strconv.Itoa(opts.CPUs))
 	}
@@ -170,7 +184,11 @@ func buildCreateArgs(opts CreateOpts) []string {
 		// we must include our own shebang.
 		args = append(args, "--script-raw", sshKeyScriptName+"="+sshKeysScript(opts.SSHKeys))
 	}
-	args = append(args, opts.Image)
+	// For the image path, IMAGE is the trailing positional. For the snapshot
+	// path, msb run takes --snapshot in place of the image — nothing trails.
+	if opts.Snapshot == "" {
+		args = append(args, opts.Image)
+	}
 	return args
 }
 
