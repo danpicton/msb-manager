@@ -57,6 +57,14 @@ var classifyCases = []struct {
 		wantText: "does-not-exist",
 	},
 	{
+		// msb logs uses a non-standard wording when the sandbox doesn't exist.
+		// Treat it as the same category so HTTP still maps to 404.
+		name:     "logs not found (alt wording)",
+		stderr:   "error: no logs directory for sandbox \"nonexistent\" (sandbox not found?)\n",
+		wantErr:  ErrSandboxNotFound,
+		wantText: "nonexistent",
+	},
+	{
 		name:    "unknown stays unknown",
 		stderr:  "error: something we have not seen before\n",
 		wantErr: nil, // classifyError returns nil for unrecognised → caller keeps the raw exit error

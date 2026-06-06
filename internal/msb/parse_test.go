@@ -76,6 +76,37 @@ func TestParseInspect_DoesNotLeakSecretValue(t *testing.T) {
 	}
 }
 
+func TestParseMetrics(t *testing.T) {
+	got, err := parseMetrics(readFixture(t, "metrics.json"))
+	if err != nil {
+		t.Fatalf("parseMetrics: %v", err)
+	}
+	if got.Name != "probe" {
+		t.Errorf("Name = %q, want %q", got.Name, "probe")
+	}
+	if got.CPUPercent != 0.0 {
+		t.Errorf("CPUPercent = %v, want 0.0", got.CPUPercent)
+	}
+	if got.MemoryBytes != 80666624 {
+		t.Errorf("MemoryBytes = %d, want 80666624", got.MemoryBytes)
+	}
+	if got.MemoryLimitBytes != 536870912 {
+		t.Errorf("MemoryLimitBytes = %d, want 536870912", got.MemoryLimitBytes)
+	}
+	if got.DiskWriteBytes != 258048 {
+		t.Errorf("DiskWriteBytes = %d, want 258048", got.DiskWriteBytes)
+	}
+	if got.NetTxBytes != 516 {
+		t.Errorf("NetTxBytes = %d, want 516", got.NetTxBytes)
+	}
+	if got.UptimeSecs != 2.004 {
+		t.Errorf("UptimeSecs = %v, want 2.004", got.UptimeSecs)
+	}
+	if got.Timestamp == "" {
+		t.Error("Timestamp empty")
+	}
+}
+
 func TestParseSnapshotList(t *testing.T) {
 	got, err := parseSnapshotList(readFixture(t, "snapshot_ls.json"))
 	if err != nil {
