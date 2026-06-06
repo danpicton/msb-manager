@@ -8,6 +8,7 @@ package msb
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -113,12 +114,29 @@ type Secret struct {
 // Create shells out to `msb create -n <name> [opts...] <image>`. msb creates
 // the sandbox and boots it in the background; a non-nil error here means the
 // create itself was rejected. Boot success is observable via Inspect.
+// sshKeyScriptName is the registered script name on PATH inside the guest
+// (msb's --script-raw places it at /.msb/scripts/<name>).
+const sshKeyScriptName = "install-ssh-keys"
+
 func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	args := buildCreateArgs(opts)
-	_, stderr, err := c.runner.Run(ctx, c.bin, args...)
-	return wrapRunErr(stderr, err)
+	if _, stderr, err := c.runner.Run(ctx, c.bin, args...); err != nil {
+		return wrapRunErr(stderr, err)
+	}
+	// msb's --script REGISTERS scripts on PATH but doesn't auto-run them. The
+	// keys install body was registered by `create`; now run it via `exec` so
+	// authorized_keys actually lands. On failure roll back with `rm -f` so the
+	// caller sees atomic "either fully created or nothing" semantics.
+	if len(opts.SSHKeys) > 0 {
+		_, stderr, err := c.runner.Run(ctx, c.bin, "exec", opts.Name, sshKeyScriptName)
+		if err != nil {
+			_, _, _ = c.runner.Run(ctx, c.bin, "rm", "-f", opts.Name)
+			return fmt.Errorf("install ssh keys after create: %w", wrapRunErr(stderr, err))
+		}
+	}
+	return nil
 }
 
 // buildCreateArgs is the pure spec→msb-args translation (CLAUDE.md's
@@ -145,7 +163,10 @@ func buildCreateArgs(opts CreateOpts) []string {
 		args = append(args, "--secret", s.Key+"="+s.Value+"@"+s.Host)
 	}
 	if len(opts.SSHKeys) > 0 {
-		args = append(args, "--script", "install-ssh-keys="+sshKeysScript(opts.SSHKeys))
+		// --script-raw (not --script) so msb does NOT decode \n/\t escapes;
+		// our printf format strings rely on staying literal. The trade-off is
+		// we must include our own shebang.
+		args = append(args, "--script-raw", sshKeyScriptName+"="+sshKeysScript(opts.SSHKeys))
 	}
 	args = append(args, opts.Image)
 	return args
@@ -155,9 +176,11 @@ func buildCreateArgs(opts CreateOpts) []string {
 // /root/.ssh/authorized_keys with the given keys (one per line), at the
 // canonical 700/600 modes. Each key is single-quoted so an embedded comment
 // containing spaces, $vars, backticks, or single quotes can't escape the
-// string. msb runs this via --script during create.
+// string. Registered via --script-raw and executed post-create via
+// `msb exec <name> install-ssh-keys`.
 func sshKeysScript(keys []string) string {
 	var sb strings.Builder
+	sb.WriteString("#!/bin/sh\n") // --script-raw doesn't insert one for us
 	sb.WriteString("set -eu\n")
 	sb.WriteString("mkdir -p /root/.ssh\n")
 	sb.WriteString("chmod 700 /root/.ssh\n")
