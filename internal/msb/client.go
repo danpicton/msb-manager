@@ -240,6 +240,55 @@ func (c *Client) Rm(ctx context.Context, name string) error {
 	return wrapRunErr(stderr, err)
 }
 
+// LogsOpts mirrors the v1 subset of `msb logs` flags we expose through the
+// HTTP API. Zero/empty fields don't appear in the args. --follow is
+// deliberately absent (build plan: fetch-only, no streaming).
+type LogsOpts struct {
+	Tail   int    // 0 = no --tail
+	Since  string // "" = no --since (msb accepts RFC3339 or "5m"/"1h"/etc.)
+	Until  string // "" = no --until
+	Source string // "" = no --source ("stdout,stderr,output,system,all")
+	Grep   string // "" = no --grep (regex over body)
+}
+
+// Logs shells out to `msb logs <name> [opts...] --json` and returns the raw
+// JSONL bytes — msb owns the per-line shape, and pass-through preserves
+// streaming semantics (one JSON object per line, ndjson). Read-only.
+func (c *Client) Logs(ctx context.Context, name string, opts LogsOpts) ([]byte, error) {
+	args := []string{"logs", name}
+	if opts.Tail > 0 {
+		args = append(args, "--tail", strconv.Itoa(opts.Tail))
+	}
+	if opts.Since != "" {
+		args = append(args, "--since", opts.Since)
+	}
+	if opts.Until != "" {
+		args = append(args, "--until", opts.Until)
+	}
+	if opts.Source != "" {
+		args = append(args, "--source", opts.Source)
+	}
+	if opts.Grep != "" {
+		args = append(args, "--grep", opts.Grep)
+	}
+	args = append(args, "--json")
+	stdout, stderr, err := c.runner.Run(ctx, c.bin, args...)
+	if err != nil {
+		return nil, wrapRunErr(stderr, err)
+	}
+	return stdout, nil
+}
+
+// Metrics shells out to `msb metrics <name> --format json` and returns the
+// parsed point-in-time snapshot. Read-only.
+func (c *Client) Metrics(ctx context.Context, name string) (Metrics, error) {
+	stdout, stderr, err := c.runner.Run(ctx, c.bin, "metrics", name, "--format", "json")
+	if err != nil {
+		return Metrics{}, wrapRunErr(stderr, err)
+	}
+	return parseMetrics(stdout)
+}
+
 // SnapshotList shells out to `msb snapshot ls --format json`. Read-only.
 func (c *Client) SnapshotList(ctx context.Context) ([]Snapshot, error) {
 	stdout, stderr, err := c.runner.Run(ctx, c.bin, "snapshot", "ls", "--format", "json")
