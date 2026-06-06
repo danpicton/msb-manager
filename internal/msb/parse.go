@@ -5,6 +5,16 @@ import (
 	"fmt"
 )
 
+// parseSnapshotList decodes `msb snapshot ls --format json` output. The CLI
+// shape maps 1:1, so a direct struct decode suffices.
+func parseSnapshotList(data []byte) ([]Snapshot, error) {
+	var out []Snapshot
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("parse msb snapshot ls: %w", err)
+	}
+	return out, nil
+}
+
 // parseVolumeList decodes `msb volume ls --format json` output.
 func parseVolumeList(data []byte) ([]Volume, error) {
 	var out []Volume

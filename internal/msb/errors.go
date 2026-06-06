@@ -15,11 +15,13 @@ import (
 //   - "sandbox already exists: <details>"
 //   - "sandbox still running: <details>"
 var (
-	ErrSandboxNotFound      = errors.New("msb: sandbox not found")
-	ErrSandboxAlreadyExists = errors.New("msb: sandbox already exists")
-	ErrSandboxStillRunning  = errors.New("msb: sandbox still running")
-	ErrVolumeAlreadyExists  = errors.New("msb: volume already exists")
-	ErrVolumeNotFound       = errors.New("msb: volume not found")
+	ErrSandboxNotFound       = errors.New("msb: sandbox not found")
+	ErrSandboxAlreadyExists  = errors.New("msb: sandbox already exists")
+	ErrSandboxStillRunning   = errors.New("msb: sandbox still running")
+	ErrVolumeAlreadyExists   = errors.New("msb: volume already exists")
+	ErrVolumeNotFound        = errors.New("msb: volume not found")
+	ErrSnapshotAlreadyExists = errors.New("msb: snapshot already exists")
+	ErrSnapshotNotFound      = errors.New("msb: snapshot not found")
 )
 
 // classifyError inspects msb's stderr text and, if a known category is found,
@@ -50,4 +52,6 @@ var classifierTable = []struct {
 	{"sandbox still running:", ErrSandboxStillRunning},
 	{"volume already exists:", ErrVolumeAlreadyExists},
 	{"volume not found:", ErrVolumeNotFound},
+	{"snapshot already exists:", ErrSnapshotAlreadyExists},
+	{"snapshot not found:", ErrSnapshotNotFound},
 }

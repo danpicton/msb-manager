@@ -35,6 +35,21 @@ type Mount struct {
 	Name     string `json:"name,omitempty"`     // source volume name; set for Type=="Named"
 }
 
+// Snapshot is one row of `msb snapshot ls`: a stored disk artifact derived
+// from a stopped sandbox. ParentDigest is a pointer because msb returns
+// `null` (not absent) when the snapshot has no recorded parent — we keep
+// the distinction so JSON re-encodes the same way.
+type Snapshot struct {
+	Name         string  `json:"name"`
+	Digest       string  `json:"digest"`
+	ImageRef     string  `json:"image_ref"`
+	Format       string  `json:"format"`
+	CreatedAt    string  `json:"created_at"`
+	ArtifactPath string  `json:"artifact_path"`
+	ParentDigest *string `json:"parent_digest"`
+	SizeBytes    int64   `json:"size_bytes"`
+}
+
 // Volume is one row of `msb volume ls`: a named microsandbox volume.
 type Volume struct {
 	Name      string `json:"name"`
