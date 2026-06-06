@@ -1,0 +1,125 @@
+{
+  "config": {
+    "cmd": [
+      "/bin/sh"
+    ],
+    "cpus": 1,
+    "disable_metrics_sample": false,
+    "entrypoint": null,
+    "env": [
+      [
+        "PATH",
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+    ],
+    "hostname": null,
+    "image": {
+      "Oci": {
+        "reference": "alpine",
+        "upper_size_mib": 4096
+      }
+    },
+    "init": null,
+    "log_level": null,
+    "manifest_digest": "sha256:4d889c14e7d5a73929ab00be2ef8ff22437e7cbc545931e52554a7b00e123d8b",
+    "memory_mib": 256,
+    "metrics_sample_interval_ms": 1000,
+    "mounts": [
+      {
+        "guest": "/tmp",
+        "readonly": false,
+        "size_mib": 64,
+        "type": "Tmpfs"
+      }
+    ],
+    "name": "jsontest",
+    "network": {
+      "dns": {
+        "nameservers": [],
+        "query_timeout_ms": 5000,
+        "rebind_protection": true
+      },
+      "enabled": true,
+      "interface": {
+        "ipv4_address": null,
+        "ipv4_pool": null,
+        "ipv6_address": null,
+        "ipv6_pool": null,
+        "mac": null,
+        "mtu": null
+      },
+      "max_connections": null,
+      "policy": {
+        "default_egress": "deny",
+        "default_ingress": "allow",
+        "rules": [
+          {
+            "action": "allow",
+            "destination": {
+              "group": "host"
+            },
+            "direction": "egress",
+            "ports": [
+              {
+                "end": 53,
+                "start": 53
+              }
+            ],
+            "protocols": [
+              "udp",
+              "tcp"
+            ]
+          },
+          {
+            "action": "allow",
+            "destination": {
+              "group": "public"
+            },
+            "direction": "egress",
+            "ports": [],
+            "protocols": []
+          }
+        ]
+      },
+      "ports": [],
+      "secrets": {
+        "on_violation": "block-and-log",
+        "secrets": []
+      },
+      "tls": {
+        "block_quic_on_intercept": true,
+        "bypass": [],
+        "cache": {
+          "capacity": 1000,
+          "validity_hours": 24
+        },
+        "enabled": false,
+        "intercept_ca": {
+          "cert_path": null,
+          "key_path": null
+        },
+        "intercepted_ports": [
+          443
+        ],
+        "upstream_ca_cert": [],
+        "verify_upstream": true
+      },
+      "trust_host_cas": false
+    },
+    "patches": [],
+    "policy": {
+      "idle_timeout_secs": null,
+      "max_duration_secs": null
+    },
+    "pull_policy": "IfMissing",
+    "rlimits": [],
+    "scripts": {},
+    "shell": null,
+    "user": null,
+    "workdir": "/"
+  },
+  "created_at": "2026-05-31 18:25:06",
+  "name": "jsontest",
+  "status": "Running",
+  "updated_at": "2026-05-31 18:25:06"
+}

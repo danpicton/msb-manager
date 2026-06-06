@@ -67,6 +67,20 @@ v1 is a **single trust domain** — any valid bearer token has full access to ev
 
 The stateless model rests on three unverified microsandbox behaviours. None block the design; each is a one-command check to do before building on it:
 
-1. **Does `msb inspect --format json` echo volume mounts and env?** If mounts are surfaced, project membership and the one-VM-per-volume check are derivable from microsandbox state (fully stateless). If not, msb-manager needs minimal server-owned tracking. Same question for env (affects whether a sandbox's create-time env is readable later).
-2. **Is volume `--size` sparse/thin?** Create a 10G volume, check actual host disk usage. Determines whether quotas can be over-committed (see ADR-0004).
-3. **Is `msb` safe under concurrent invocation?** If not, msb-manager must serialise mutating commands (create/start/stop/rm).
+1. **Does `msb inspect --format json` echo volume mounts and env?** ✅ *Resolved (msb v0.5.2, 2026-06-03).* Both surfaced. `config.env` as `[key, value]` tuples. `config.mounts` distinguishes the auto `Tmpfs` (`{type:"Tmpfs", guest:"/tmp", size_mib}`) from a **named volume** (`{type:"Named", name:"myvol", guest:"/workspace", readonly, host_permissions, stat_virtualization}`). The `name` field carries the volume source, so **project membership and the one-VM-per-volume check are derivable from msb state alone — the lock stays stateless** (no server-owned volume map). Fixtures: `internal/msb/testdata/{inspect,inspect_named_volume}.json`; helper `SandboxDetail.VolumeNames()`.
+2. **Is volume `--size` sparse/thin?** ✅ *Resolved (msb v0.5.2, 2026-06-04).* Strongly sparse: a 10 GiB volume occupied 4 KiB on disk. Quotas can be over-committed freely (ADR-0004).
+3. **Is `msb` safe under concurrent invocation?** ❌ *Resolved (msb v0.5.2, 2026-06-04) — NO.* Two parallel `msb create` got stuck and left subsequent `msb ls` hanging (lock contention against the supervisor). msb-manager must **serialise mutating commands** (create/start/stop/rm) — step 5 design now includes a per-process global mutex in addition to the per-volume `O_EXCL` lock. (The TTY-suspend in interactive shells is a separate artifact and doesn't affect msb-manager, which uses `exec.Cmd` pipes.)
+
+## msb CLI surface (verified, v0.5.2, 2026-06-04)
+
+- **`--secret ENV=VALUE@HOST`** is present on `create`/`run`. Egress creds (step 6) are unblocked. Companion flag `--on-secret-violation` controls policy (`block`, `block-and-log`, `block-and-terminate`, `passthrough`).
+- **No SSH-pubkey install flag.** `msb ssh` exists for *connecting* but nothing on `create`/`run` for installing a key into the guest. Step 6 needs another path — a bootstrap script writing to `authorized_keys` is the obvious one.
+- **Error shape** (all exit 1, stderr `error: <category>: <details>`):
+  - `sandbox not found: <name>` → mapped to HTTP 404
+  - `sandbox already exists: <details>` → 409
+  - `sandbox still running: <details>` → 409 (rm of running sandbox)
+  - `volume already exists: <name>` → 409
+  - `volume not found: <name>` → 404
+  - Anything else stays 500. Fixtures in `internal/msb/errors_test.go`; classifier in `internal/msb/errors.go`.
+- **`msb volume rm` does NOT block on in-use volumes.** Verified: removing a volume currently mounted by a running sandbox returns exit 0 and the volume is gone (the running sandbox keeps the mount until it stops, but the volume is no longer in `msb volume ls`). msb-manager's `DELETE /volumes/{name}` consults the in-memory VolumeLock and returns 409 when a running sandbox holds the claim — a safer invariant than msb itself enforces.
+- **`msb inspect --format json` echoes secret values in plaintext** under `config.network.secrets.secrets[].value`. Likely an upstream bug (the placeholder/host-allowlist structure is useful, the raw value is not). msb-manager's parser deliberately omits the `network` subtree from `SandboxDetail`, so `GET /sandboxes/{name}` doesn't surface it; `TestParseInspect_DoesNotLeakSecretValue` is the regression guard.

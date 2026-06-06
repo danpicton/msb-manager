@@ -1,0 +1,12 @@
+{
+  "cpu_percent": 0.0,
+  "disk_read_bytes": 0,
+  "disk_write_bytes": 258048,
+  "memory_bytes": 80666624,
+  "memory_limit_bytes": 536870912,
+  "name": "probe",
+  "net_rx_bytes": 0,
+  "net_tx_bytes": 516,
+  "timestamp": "2026-06-06T08:12:50.545+00:00",
+  "uptime_secs": 2.004
+}
