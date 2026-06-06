@@ -46,10 +46,36 @@ func TestValidate_RequiresName(t *testing.T) {
 	}
 }
 
-func TestValidate_RequiresImage(t *testing.T) {
+func TestValidate_RequiresImageOrSnapshot(t *testing.T) {
+	// Neither -> error
 	s := Spec{Name: "voltest"}
 	if err := s.Validate(); err == nil {
-		t.Fatal("Validate(no image): got nil, want error")
+		t.Fatal("Validate(no image, no snapshot): got nil, want error")
+	}
+}
+
+func TestValidate_ImageAndSnapshotMutuallyExclusive(t *testing.T) {
+	s := Spec{Name: "voltest", Image: "alpine", Snapshot: "probe-snap"}
+	if err := s.Validate(); err == nil {
+		t.Fatal("Validate(both image+snapshot): got nil, want error")
+	}
+}
+
+func TestValidate_SnapshotAloneIsValid(t *testing.T) {
+	s := Spec{Name: "voltest", Snapshot: "probe-snap"}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("Validate(snapshot only): unexpected error: %v", err)
+	}
+}
+
+func TestToCreateOpts_SnapshotMapped(t *testing.T) {
+	s := Spec{Name: "x", Snapshot: "probe-snap"}
+	opts := s.ToCreateOpts()
+	if opts.Snapshot != "probe-snap" {
+		t.Errorf("Snapshot = %q, want %q", opts.Snapshot, "probe-snap")
+	}
+	if opts.Image != "" {
+		t.Errorf("Image = %q, want empty when Snapshot is set", opts.Image)
 	}
 }
 
