@@ -288,6 +288,63 @@ func TestClientVolumeList_InvokesMsbVolumeLsJSON(t *testing.T) {
 	}
 }
 
+func TestClientSnapshotList_InvokesMsbSnapshotLsJSON(t *testing.T) {
+	r := &fakeRunner{stdout: []byte("[]")}
+	c := NewClient("msb", r)
+	if _, err := c.SnapshotList(context.Background()); err != nil {
+		t.Fatalf("SnapshotList: %v", err)
+	}
+	wantArgs := []string{"snapshot", "ls", "--format", "json"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
+func TestClientSnapshotCreate_InvokesWithSortedLabels(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+	if err := c.SnapshotCreate(context.Background(), "probe", "probe-snap",
+		map[string]string{"team": "ops", "msb.parent": "test"}, false); err != nil {
+		t.Fatalf("SnapshotCreate: %v", err)
+	}
+	// Labels emitted in sorted key order so args are deterministic; destination
+	// is the trailing positional (msb's grammar, not a flag).
+	wantArgs := []string{
+		"snapshot", "create",
+		"--from", "probe",
+		"--label", "msb.parent=test",
+		"--label", "team=ops",
+		"probe-snap",
+	}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
+	}
+}
+
+func TestClientSnapshotCreate_ForceAddsFlag(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+	if err := c.SnapshotCreate(context.Background(), "probe", "probe-snap", nil, true); err != nil {
+		t.Fatalf("SnapshotCreate: %v", err)
+	}
+	wantArgs := []string{"snapshot", "create", "--from", "probe", "--force", "probe-snap"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
+func TestClientSnapshotRm_InvokesMsbSnapshotRm(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+	if err := c.SnapshotRm(context.Background(), "probe-snap"); err != nil {
+		t.Fatalf("SnapshotRm: %v", err)
+	}
+	wantArgs := []string{"snapshot", "rm", "probe-snap"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
 func TestClientVolumeRm_InvokesMsbVolumeRm(t *testing.T) {
 	r := &fakeRunner{}
 	c := NewClient("msb", r)
