@@ -183,6 +183,35 @@ func (rr *recordingRunner) Run(_ context.Context, _ string, args ...string) ([]b
 // CLAUDE.md. Args order: -n NAME, optionals (-c, -m, -v, -e, -p), IMAGE last.
 // Env is sorted by key for determinism (matters for testing and reproducible
 // audit logs; msb itself is order-insensitive).
+// When Snapshot is set, we dispatch to `msb run -d --snapshot <name>` instead
+// of `msb create` (msb v0.5.2 only accepts --snapshot on run). The remaining
+// optional flags are emitted the same way; there is no trailing positional
+// IMAGE (the snapshot pins it).
+func TestClientCreate_FromSnapshot_DispatchesToMsbRun(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+
+	if err := c.Create(context.Background(), CreateOpts{
+		Name: "derived", Snapshot: "probe-snap",
+		CPUs: 2, MemoryMiB: 512,
+		Volume: &VolumeMount{Name: "myvol", Mount: "/workspace"},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	wantArgs := []string{
+		"run", "-d",
+		"--snapshot", "probe-snap",
+		"-n", "derived",
+		"-c", "2",
+		"-m", "512",
+		"-v", "myvol:/workspace",
+	}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
+	}
+}
+
 func TestClientCreate_FullOpts(t *testing.T) {
 	r := &fakeRunner{}
 	c := NewClient("msb", r)
