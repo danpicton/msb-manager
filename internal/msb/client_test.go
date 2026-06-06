@@ -345,6 +345,68 @@ func TestClientSnapshotRm_InvokesMsbSnapshotRm(t *testing.T) {
 	}
 }
 
+func TestClientLogs_NoOptsJustNameAndJSON(t *testing.T) {
+	r := &fakeRunner{stdout: []byte(`{"line":"x"}` + "\n")}
+	c := NewClient("msb", r)
+
+	body, err := c.Logs(context.Background(), "probe", LogsOpts{})
+	if err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+	if string(body) != `{"line":"x"}`+"\n" {
+		t.Errorf("returned body = %q, want pass-through", body)
+	}
+
+	wantArgs := []string{"logs", "probe", "--json"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
+func TestClientLogs_FullOpts(t *testing.T) {
+	r := &fakeRunner{}
+	c := NewClient("msb", r)
+
+	if _, err := c.Logs(context.Background(), "probe", LogsOpts{
+		Tail:   200,
+		Since:  "5m",
+		Until:  "2026-06-06T08:00:00Z",
+		Source: "stdout,stderr",
+		Grep:   "ERROR",
+	}); err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+	wantArgs := []string{
+		"logs", "probe",
+		"--tail", "200",
+		"--since", "5m",
+		"--until", "2026-06-06T08:00:00Z",
+		"--source", "stdout,stderr",
+		"--grep", "ERROR",
+		"--json",
+	}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
+	}
+}
+
+func TestClientMetrics_InvokesMsbMetricsJSON(t *testing.T) {
+	r := &fakeRunner{stdout: []byte(`{"name":"probe","cpu_percent":1.5}`)}
+	c := NewClient("msb", r)
+
+	got, err := c.Metrics(context.Background(), "probe")
+	if err != nil {
+		t.Fatalf("Metrics: %v", err)
+	}
+	if got.Name != "probe" || got.CPUPercent != 1.5 {
+		t.Errorf("got = %+v, want name=probe cpu=1.5", got)
+	}
+	wantArgs := []string{"metrics", "probe", "--format", "json"}
+	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
 func TestClientVolumeRm_InvokesMsbVolumeRm(t *testing.T) {
 	r := &fakeRunner{}
 	c := NewClient("msb", r)
