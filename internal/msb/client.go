@@ -130,7 +130,9 @@ func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 	// authorized_keys actually lands. On failure roll back with `rm -f` so the
 	// caller sees atomic "either fully created or nothing" semantics.
 	if len(opts.SSHKeys) > 0 {
-		_, stderr, err := c.runner.Run(ctx, c.bin, "exec", opts.Name, sshKeyScriptName)
+		// `--` terminates msb's own flag parsing so the script name is taken
+		// as the command rather than as another flag.
+		_, stderr, err := c.runner.Run(ctx, c.bin, "exec", opts.Name, "--", sshKeyScriptName)
 		if err != nil {
 			_, _, _ = c.runner.Run(ctx, c.bin, "rm", "-f", opts.Name)
 			return fmt.Errorf("install ssh keys after create: %w", wrapRunErr(stderr, err))

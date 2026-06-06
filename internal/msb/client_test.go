@@ -129,8 +129,8 @@ func TestClientCreate_WithSSHKeys(t *testing.T) {
 		}
 	}
 
-	// 2) exec x install-ssh-keys
-	wantExec := []string{"exec", "x", "install-ssh-keys"}
+	// 2) exec x -- install-ssh-keys (the -- terminates msb's flag parsing)
+	wantExec := []string{"exec", "x", "--", "install-ssh-keys"}
 	if !reflect.DeepEqual(calls[1], wantExec) {
 		t.Errorf("second invocation = %v, want %v", calls[1], wantExec)
 	}
