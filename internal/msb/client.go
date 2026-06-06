@@ -240,6 +240,44 @@ func (c *Client) Rm(ctx context.Context, name string) error {
 	return wrapRunErr(stderr, err)
 }
 
+// SnapshotList shells out to `msb snapshot ls --format json`. Read-only.
+func (c *Client) SnapshotList(ctx context.Context) ([]Snapshot, error) {
+	stdout, stderr, err := c.runner.Run(ctx, c.bin, "snapshot", "ls", "--format", "json")
+	if err != nil {
+		return nil, wrapRunErr(stderr, err)
+	}
+	return parseSnapshotList(stdout)
+}
+
+// SnapshotCreate shells out to:
+//
+//	msb snapshot create --from <from> [--label k=v ...] [--force] <dest>
+//
+// from must be a stopped sandbox; dest is the snapshot name. Labels are
+// emitted in sorted key order for deterministic args.
+func (c *Client) SnapshotCreate(ctx context.Context, from, dest string, labels map[string]string, force bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	args := []string{"snapshot", "create", "--from", from}
+	for _, k := range sortedKeys(labels) {
+		args = append(args, "--label", k+"="+labels[k])
+	}
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, dest)
+	_, stderr, err := c.runner.Run(ctx, c.bin, args...)
+	return wrapRunErr(stderr, err)
+}
+
+// SnapshotRm shells out to `msb snapshot rm <name>`.
+func (c *Client) SnapshotRm(ctx context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, stderr, err := c.runner.Run(ctx, c.bin, "snapshot", "rm", name)
+	return wrapRunErr(stderr, err)
+}
+
 // VolumeList shells out to `msb volume ls --format json`. Read-only, so it
 // doesn't take the mutating-commands mutex.
 func (c *Client) VolumeList(ctx context.Context) ([]Volume, error) {
