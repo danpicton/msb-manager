@@ -45,6 +45,18 @@ var classifyCases = []struct {
 		wantText: "nonexistent",
 	},
 	{
+		name:     "snapshot already exists",
+		stderr:   "error: snapshot already exists: /home/dan/.microsandbox/snapshots/probe-snap\n",
+		wantErr:  ErrSnapshotAlreadyExists,
+		wantText: "probe-snap",
+	},
+	{
+		name:     "snapshot not found",
+		stderr:   "error: snapshot not found: /home/dan/.microsandbox/snapshots/does-not-exist\n",
+		wantErr:  ErrSnapshotNotFound,
+		wantText: "does-not-exist",
+	},
+	{
 		name:    "unknown stays unknown",
 		stderr:  "error: something we have not seen before\n",
 		wantErr: nil, // classifyError returns nil for unrecognised → caller keeps the raw exit error

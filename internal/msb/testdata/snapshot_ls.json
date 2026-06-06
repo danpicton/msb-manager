@@ -1,0 +1,12 @@
+[
+  {
+    "artifact_path": "/home/dan/.microsandbox/snapshots/probe-snap",
+    "created_at": "2026-06-06 07:52:18",
+    "digest": "sha256:dcbf07895c1b43618609758fc7ef774d15207a44a3785c44db64d19a4023e6a9",
+    "format": "raw",
+    "image_ref": "alpine",
+    "name": "probe-snap",
+    "parent_digest": null,
+    "size_bytes": 4294967296
+  }
+]

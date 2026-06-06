@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -72,6 +73,48 @@ func TestParseInspect_DoesNotLeakSecretValue(t *testing.T) {
 	}
 	if bytes.Contains(out, []byte(canary)) {
 		t.Fatalf("secret value leaked through SandboxDetail JSON: %s", out)
+	}
+}
+
+func TestParseSnapshotList(t *testing.T) {
+	got, err := parseSnapshotList(readFixture(t, "snapshot_ls.json"))
+	if err != nil {
+		t.Fatalf("parseSnapshotList: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d snapshots, want 1", len(got))
+	}
+	s := got[0]
+	if s.Name != "probe-snap" {
+		t.Errorf("Name = %q, want %q", s.Name, "probe-snap")
+	}
+	if s.ImageRef != "alpine" {
+		t.Errorf("ImageRef = %q, want %q", s.ImageRef, "alpine")
+	}
+	if s.Format != "raw" {
+		t.Errorf("Format = %q, want %q", s.Format, "raw")
+	}
+	if !strings.HasPrefix(s.Digest, "sha256:") {
+		t.Errorf("Digest = %q, want sha256: prefix", s.Digest)
+	}
+	if s.SizeBytes != 4294967296 {
+		t.Errorf("SizeBytes = %d, want 4294967296", s.SizeBytes)
+	}
+	if s.ParentDigest != nil {
+		t.Errorf("ParentDigest = %v, want nil (null in JSON)", *s.ParentDigest)
+	}
+	if s.ArtifactPath == "" {
+		t.Error("ArtifactPath empty")
+	}
+}
+
+func TestParseSnapshotListEmpty(t *testing.T) {
+	got, err := parseSnapshotList([]byte("[]"))
+	if err != nil {
+		t.Fatalf("parseSnapshotList([]): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d, want 0", len(got))
 	}
 }
 
