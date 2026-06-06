@@ -39,6 +39,10 @@ type fakeMsb struct {
 	snapshotListErr   error
 	snapshotCreateErr error
 	snapshotRmErr     error
+	logsOut           []byte
+	logsErr           error
+	metricsOut        msb.Metrics
+	metricsErr        error
 
 	gotInspectName     string
 	gotCreateOpts      msb.CreateOpts
@@ -49,6 +53,9 @@ type fakeMsb struct {
 	gotVolumeRm        string
 	gotSnapshotCreate  snapshotCall
 	gotSnapshotRm      string
+	gotLogsName        string
+	gotLogsOpts        msb.LogsOpts
+	gotMetricsName     string
 }
 
 func (f *fakeMsb) List(_ context.Context) ([]msb.Sandbox, error) {
@@ -73,6 +80,15 @@ func (f *fakeMsb) Stop(_ context.Context, name string) error {
 func (f *fakeMsb) Rm(_ context.Context, name string) error {
 	f.gotRmName = name
 	return f.rmErr
+}
+func (f *fakeMsb) Logs(_ context.Context, name string, opts msb.LogsOpts) ([]byte, error) {
+	f.gotLogsName = name
+	f.gotLogsOpts = opts
+	return f.logsOut, f.logsErr
+}
+func (f *fakeMsb) Metrics(_ context.Context, name string) (msb.Metrics, error) {
+	f.gotMetricsName = name
+	return f.metricsOut, f.metricsErr
 }
 func (f *fakeMsb) VolumeList(_ context.Context) ([]msb.Volume, error) {
 	return f.volumeListOut, f.volumeListErr
@@ -921,5 +937,100 @@ func TestDeleteSnapshot_NotFoundReturns404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Logs and metrics endpoints ---
+
+func TestGetLogs_PassThroughNDJSONWithQueryParams(t *testing.T) {
+	canned := []byte(`{"line":"hello"}` + "\n" + `{"line":"world"}` + "\n")
+	client := &fakeMsb{logsOut: canned}
+	srv := New(Config{Token: testToken}, client)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/sandboxes/probe/logs?tail=50&since=5m&source=stdout,stderr&grep=ERROR", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/x-ndjson" {
+		t.Errorf("Content-Type = %q, want application/x-ndjson", ct)
+	}
+	if rec.Body.String() != string(canned) {
+		t.Errorf("body not pass-through:\n  got:  %q\n  want: %q", rec.Body.String(), canned)
+	}
+	if client.gotLogsName != "probe" {
+		t.Errorf("name = %q, want probe", client.gotLogsName)
+	}
+	want := msb.LogsOpts{Tail: 50, Since: "5m", Source: "stdout,stderr", Grep: "ERROR"}
+	if client.gotLogsOpts != want {
+		t.Errorf("opts = %+v, want %+v", client.gotLogsOpts, want)
+	}
+}
+
+func TestGetLogs_InvalidTailReturns400(t *testing.T) {
+	client := &fakeMsb{}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodGet, "/sandboxes/probe/logs?tail=nope"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if client.gotLogsName != "" {
+		t.Error("Logs invoked despite bad query param")
+	}
+}
+
+func TestGetLogs_NotFoundReturns404(t *testing.T) {
+	client := &fakeMsb{logsErr: msb.ErrSandboxNotFound}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodGet, "/sandboxes/nope/logs"))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestGetMetrics_ReturnsJSONFromMsbMetrics(t *testing.T) {
+	client := &fakeMsb{metricsOut: msb.Metrics{
+		Name: "probe", CPUPercent: 1.5, MemoryBytes: 80666624,
+		UptimeSecs: 2.004, Timestamp: "2026-06-06T08:12:50.545+00:00",
+	}}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodGet, "/sandboxes/probe/metrics"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var got msb.Metrics
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response not JSON: %v", err)
+	}
+	if got.Name != "probe" || got.CPUPercent != 1.5 || got.MemoryBytes != 80666624 {
+		t.Errorf("body = %+v, want probe/1.5/80666624", got)
+	}
+}
+
+func TestGetMetrics_NotFoundReturns404(t *testing.T) {
+	client := &fakeMsb{metricsErr: msb.ErrSandboxNotFound}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodGet, "/sandboxes/nope/metrics"))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
