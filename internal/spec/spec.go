@@ -21,15 +21,16 @@ import (
 // Spec describes a sandbox to create. Field set grows as later steps land
 // (ssh-key install design pending; snapshot source at step 7).
 type Spec struct {
-	Name    string            `yaml:"name" json:"name"`
-	Image   string            `yaml:"image" json:"image"`
-	CPUs    int               `yaml:"cpus,omitempty" json:"cpus,omitempty"`
-	Memory  int               `yaml:"memory,omitempty" json:"memory,omitempty"` // MiB
-	Volume  *Volume           `yaml:"volume,omitempty" json:"volume,omitempty"`
-	Env     map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
-	Ports   []PortMapping     `yaml:"ports,omitempty" json:"ports,omitempty"`
-	Secrets []Secret          `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	SSHKeys []string          `yaml:"ssh_keys,omitempty" json:"ssh_keys,omitempty"`
+	Name     string            `yaml:"name" json:"name"`
+	Image    string            `yaml:"image,omitempty" json:"image,omitempty"`       // OR snapshot
+	Snapshot string            `yaml:"snapshot,omitempty" json:"snapshot,omitempty"` // OR image
+	CPUs     int               `yaml:"cpus,omitempty" json:"cpus,omitempty"`
+	Memory   int               `yaml:"memory,omitempty" json:"memory,omitempty"` // MiB
+	Volume   *Volume           `yaml:"volume,omitempty" json:"volume,omitempty"`
+	Env      map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Ports    []PortMapping     `yaml:"ports,omitempty" json:"ports,omitempty"`
+	Secrets  []Secret          `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	SSHKeys  []string          `yaml:"ssh_keys,omitempty" json:"ssh_keys,omitempty"`
 }
 
 // Volume is a single named-volume mount. (Multi-volume creates aren't
@@ -73,6 +74,7 @@ func (s Spec) ToCreateOpts() msb.CreateOpts {
 	opts := msb.CreateOpts{
 		Name:      s.Name,
 		Image:     s.Image,
+		Snapshot:  s.Snapshot,
 		CPUs:      s.CPUs,
 		MemoryMiB: s.Memory,
 		Env:       s.Env,
@@ -95,8 +97,11 @@ func (s Spec) Validate() error {
 	if s.Name == "" {
 		return errors.New("spec: name is required")
 	}
-	if s.Image == "" {
-		return errors.New("spec: image is required")
+	if s.Image == "" && s.Snapshot == "" {
+		return errors.New("spec: one of image or snapshot is required")
+	}
+	if s.Image != "" && s.Snapshot != "" {
+		return errors.New("spec: image and snapshot are mutually exclusive")
 	}
 	if s.CPUs < 0 {
 		return fmt.Errorf("spec: cpus must be >= 0, got %d", s.CPUs)

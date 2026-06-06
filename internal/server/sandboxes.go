@@ -76,7 +76,13 @@ func handleCreateSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerF
 			writeAdapterError(w, r, "create sandbox", err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]string{"name": s.Name, "image": s.Image})
+		resp := map[string]string{"name": s.Name}
+		if s.Image != "" {
+			resp["image"] = s.Image
+		} else {
+			resp["snapshot"] = s.Snapshot
+		}
+		writeJSON(w, http.StatusCreated, resp)
 	}
 }
 
