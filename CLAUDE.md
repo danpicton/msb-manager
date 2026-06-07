@@ -25,3 +25,4 @@ Before writing any code, read these — the design is settled and these records 
 
 - **TDD.** Use the `tdd` skill (red-green-refactor). The highest-value test seams are the pure layers: spec→`msb`-args translation, `msb`-JSON→domain structs, the one-VM-per-volume lock state machine, and lineage-label stamping. Mock the subprocess boundary via an injected exec-runner interface; reserve integration tests for a real `msb`.
 - Keep the `msb` CLI interaction in **one adapter module** with snapshot-tested parsers, so a CLI-output change is a one-place fix.
+- **Issues and PRs** follow [docs/issue-pr-guidelines.md](docs/issue-pr-guidelines.md) and the templates in `.github/` — location-prefixed titles, checkable acceptance criteria, explicit out-of-scope, named test seam.

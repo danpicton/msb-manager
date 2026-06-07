@@ -1,0 +1,62 @@
+name: Task
+description: A bug, feature, or chore — written so a newcomer (human or agent) could pick it up cold.
+title: "[area] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Title the issue with **where** the work happens, not just what — e.g. `[api] 409 on create when volume lock held`, `[msb adapter] parse snapshot lineage labels`.
+        Full guidance: [docs/issue-pr-guidelines.md](../../docs/issue-pr-guidelines.md).
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type
+      options:
+        - Bug
+        - Feature
+        - Chore
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why this matters, in one or two sentences. Agents cannot infer unstated rationale.
+      placeholder: e.g. Concurrent msb invocations hang the supervisor (CONTEXT.md, verification 3), so mutating commands must be serialised.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: The change itself. For bugs — observed vs expected behaviour, and how to reproduce.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checkable bullets. The issue is done when every box can be ticked.
+      placeholder: |
+        - [ ] POST /sandboxes returns 409 when the volume lock is held
+        - [ ] Lock state reconciles against `msb ls` on startup
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: What this issue deliberately does not cover. Keeps the work narrow.
+  - type: textarea
+    id: pointers
+    attributes:
+      label: Pointers
+      description: Relevant files, ADRs, fixtures, or code patterns to follow.
+      placeholder: |
+        - internal/msb/errors.go — error classifier
+        - ADR-0003 — stateless model
+  - type: textarea
+    id: tests
+    attributes:
+      label: Test expectations
+      description: Which TDD seam this lands in (spec→args translation, JSON→struct parsing, volume-lock state machine, lineage stamping) and what proves it works.
