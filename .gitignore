@@ -25,3 +25,4 @@ credentials
 
 # Local Claude state
 .claude/
+msb-manager
