@@ -513,6 +513,35 @@ func (cr *concurrencyRunner) Run(_ context.Context, _ string, _ ...string) ([]by
 	return nil, nil, nil
 }
 
+// A failed create whose stderr echoes the offending --secret argument must not
+// leak the secret value into the returned (and therefore logged) error (issue
+// #7). Redaction must not break sentinel classification — errors.Is still works.
+// Mirrors TestParseInspect_DoesNotLeakSecretValue on the create/log side.
+func TestClientCreate_DoesNotLeakSecretInError(t *testing.T) {
+	const secretVal = "ghp_SUPER_SECRET_do_not_log"
+	r := &fakeRunner{
+		stderr: []byte("error: sandbox already exists: rejected --secret GITHUB_TOKEN=" +
+			secretVal + "@github.com\n"),
+		err: errors.New("exit status 1"),
+	}
+	c := NewClient("msb", r)
+
+	err := c.Create(context.Background(), CreateOpts{
+		Name: "x", Image: "alpine",
+		Secrets: []Secret{{Key: "GITHUB_TOKEN", Value: secretVal, Host: "github.com"}},
+	})
+	if err == nil {
+		t.Fatal("Create: got nil, want error")
+	}
+	if strings.Contains(err.Error(), secretVal) {
+		t.Fatalf("secret value leaked through create error: %v", err)
+	}
+	// The sentinel must still be reachable for HTTP status mapping.
+	if !errors.Is(err, ErrSandboxAlreadyExists) {
+		t.Errorf("redaction broke sentinel classification: %v", err)
+	}
+}
+
 // blockingRunner simulates a hung msb: it blocks until ctx is cancelled (the
 // timeout firing, then exec killing the child) and then returns ctx.Err(),
 // mirroring how exec.CommandContext surfaces a killed process.

@@ -164,7 +164,11 @@ func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 	defer c.mu.Unlock()
 	args := buildCreateArgs(opts)
 	if _, stderr, err := c.run(ctx, args...); err != nil {
-		return wrapRunErr(stderr, err)
+		// msb may echo the offending --secret argument (value inline) in its
+		// stderr; redact secret values before they're folded into the error and
+		// logged (issue #7). classifyError's prefixes don't contain secrets, so
+		// sentinel mapping is unaffected.
+		return wrapRunErr(redactSecrets(stderr, opts.Secrets), err)
 	}
 	// msb's --script REGISTERS scripts on PATH but doesn't auto-run them. The
 	// keys install body was registered by `create`; now run it via `exec` so
@@ -216,6 +220,11 @@ func buildCreateArgs(opts CreateOpts) []string {
 		args = append(args, "-p", strconv.Itoa(p.Host)+":"+strconv.Itoa(p.Guest))
 	}
 	for _, s := range opts.Secrets {
+		// ACCEPTED V1 RISK (issue #7): the secret value is inline in argv, so it
+		// is world-readable via /proc/<pid>/cmdline for the lifetime of the msb
+		// child. Bounded today — single host, msb-manager runs non-root, single
+		// trust domain (CONTEXT.md). Migrating to env/stdin needs a real msb to
+		// confirm `msb create` accepts secrets off-argv; TODO once available.
 		args = append(args, "--secret", s.Key+"="+s.Value+"@"+s.Host)
 	}
 	if len(opts.SSHKeys) > 0 {
@@ -260,6 +269,23 @@ func sshKeysScript(keys []string) string {
 // embed a literal ' inside a POSIX single-quoted string.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// redactSecrets replaces every non-empty secret value in s with a placeholder.
+// Used to scrub msb stderr before it's folded into an error and logged, so a
+// secret echoed back in an error message (issue #7) never reaches the logs.
+func redactSecrets(s []byte, secrets []Secret) []byte {
+	if len(secrets) == 0 {
+		return s
+	}
+	out := string(s)
+	for _, sec := range secrets {
+		if sec.Value == "" {
+			continue
+		}
+		out = strings.ReplaceAll(out, sec.Value, "***REDACTED***")
+	}
+	return []byte(out)
 }
 
 func sortedKeys(m map[string]string) []string {
