@@ -22,6 +22,46 @@ import (
 
 const shutdownTimeout = 15 * time.Second
 
+// HTTP server timeouts. The listener is loopback-only with Caddy fronting it
+// (CLAUDE.md invariant), but a slow upstream connection from Caddy still
+// consumes a server goroutine, so we bound every phase rather than rely on the
+// zero-value (infinite) defaults.
+const (
+	// readHeaderTimeout is the cheap, high-value Slowloris mitigation: headers
+	// must arrive promptly or the connection is dropped before a handler runs.
+	readHeaderTimeout = 5 * time.Second
+	// readTimeout bounds reading the whole request including body. Specs and
+	// volume/snapshot bodies are small declarative YAML/JSON (capped at 64 KiB),
+	// so a generous few seconds is ample.
+	readTimeout = 15 * time.Second
+	// writeTimeout bounds writing the response. It must exceed the msb command
+	// timeout (issue #4) so a slow lifecycle op can still write its 504 before
+	// the connection is torn down; logs are fetch-only (buffered fully) so there
+	// is no streaming deadline to conflict with.
+	writeTimeout = 120 * time.Second
+	// idleTimeout reaps keep-alive connections that go quiet between requests.
+	idleTimeout = 60 * time.Second
+
+	// msbCmdTimeoutCeiling is the upper bound any per-invocation msb command
+	// timeout (issue #4) may be configured to. writeTimeout is kept above it so
+	// a timed-out command can always surface its error to the client.
+	msbCmdTimeoutCeiling = 90 * time.Second
+)
+
+// newHTTPServer builds the control-plane HTTP server with conservative
+// timeouts on every request phase. Extracted so the timeout configuration is
+// unit-testable without binding a socket.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+}
+
 // reconcileVolumes builds the initial volume->sandbox map from msb's running
 // sandboxes, and hands it to the lock as authoritative truth.
 func reconcileVolumes(ctx context.Context, client *msb.Client, vlock *lock.VolumeLock) error {
@@ -74,10 +114,10 @@ func run(logger *slog.Logger) error {
 		logger.Warn("startup volume reconcile failed; lock starts empty", "err", err)
 	}
 
-	srv := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: server.NewWithLock(server.Config{Token: cfg.Token}, msbClient, vlock),
-	}
+	srv := newHTTPServer(
+		cfg.ListenAddr,
+		server.NewWithLock(server.Config{Token: cfg.Token}, msbClient, vlock),
+	)
 
 	// Run the listener in the background; main goroutine waits for a signal.
 	listenErr := make(chan error, 1)
