@@ -56,7 +56,7 @@ func TestClientInspect_InvokesMsbInspectJSON(t *testing.T) {
 	if r.gotName != "msb" {
 		t.Errorf("invoked binary = %q, want %q", r.gotName, "msb")
 	}
-	wantArgs := []string{"inspect", "--format", "json", "jsontest"}
+	wantArgs := []string{"inspect", "--format", "json", "--", "jsontest"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -70,7 +70,7 @@ func TestClientCreate_InvokesMsbCreate(t *testing.T) {
 		t.Fatalf("Create: unexpected error: %v", err)
 	}
 
-	wantArgs := []string{"create", "-n", "voltest", "alpine"}
+	wantArgs := []string{"create", "-n", "voltest", "--", "alpine"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -157,7 +157,7 @@ func TestClientCreate_SSHKeyInstallFailureRollsBack(t *testing.T) {
 		t.Fatalf("got %d calls, want 3 (create, exec, rm); calls=%v", len(calls), calls)
 	}
 	// Final call must be a force-rm of the sandbox we just created.
-	wantRm := []string{"rm", "-f", "x"}
+	wantRm := []string{"rm", "-f", "--", "x"}
 	if !reflect.DeepEqual(calls[2], wantRm) {
 		t.Errorf("rollback call = %v, want %v", calls[2], wantRm)
 	}
@@ -245,7 +245,7 @@ func TestClientCreate_FullOpts(t *testing.T) {
 		"-p", "9090:90",
 		"--secret", "GITHUB_TOKEN=ghp_x@github.com",
 		"--secret", "OPENAI_KEY=sk-y@api.openai.com",
-		"alpine",
+		"--", "alpine",
 	}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
@@ -259,7 +259,7 @@ func TestClientStart_InvokesMsbStart(t *testing.T) {
 	if err := c.Start(context.Background(), "voltest"); err != nil {
 		t.Fatalf("Start: unexpected error: %v", err)
 	}
-	wantArgs := []string{"start", "voltest"}
+	wantArgs := []string{"start", "--", "voltest"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -272,7 +272,7 @@ func TestClientStop_InvokesMsbStop(t *testing.T) {
 	if err := c.Stop(context.Background(), "voltest"); err != nil {
 		t.Fatalf("Stop: unexpected error: %v", err)
 	}
-	wantArgs := []string{"stop", "voltest"}
+	wantArgs := []string{"stop", "--", "voltest"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -285,7 +285,7 @@ func TestClientRm_InvokesMsbRm(t *testing.T) {
 	if err := c.Rm(context.Background(), "voltest"); err != nil {
 		t.Fatalf("Rm: unexpected error: %v", err)
 	}
-	wantArgs := []string{"rm", "voltest"}
+	wantArgs := []string{"rm", "--", "voltest"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -298,7 +298,7 @@ func TestClientVolumeCreate_InvokesMsbVolumeCreate(t *testing.T) {
 	if err := c.VolumeCreate(context.Background(), "myvol", "1G"); err != nil {
 		t.Fatalf("VolumeCreate: unexpected error: %v", err)
 	}
-	wantArgs := []string{"volume", "create", "--size", "1G", "myvol"}
+	wantArgs := []string{"volume", "create", "--size", "1G", "--", "myvol"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -343,7 +343,7 @@ func TestClientSnapshotCreate_InvokesWithSortedLabels(t *testing.T) {
 		"--from", "probe",
 		"--label", "msb.parent=test",
 		"--label", "team=ops",
-		"probe-snap",
+		"--", "probe-snap",
 	}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
@@ -356,7 +356,7 @@ func TestClientSnapshotCreate_ForceAddsFlag(t *testing.T) {
 	if err := c.SnapshotCreate(context.Background(), "probe", "probe-snap", nil, true); err != nil {
 		t.Fatalf("SnapshotCreate: %v", err)
 	}
-	wantArgs := []string{"snapshot", "create", "--from", "probe", "--force", "probe-snap"}
+	wantArgs := []string{"snapshot", "create", "--from", "probe", "--force", "--", "probe-snap"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -368,7 +368,7 @@ func TestClientSnapshotRm_InvokesMsbSnapshotRm(t *testing.T) {
 	if err := c.SnapshotRm(context.Background(), "probe-snap"); err != nil {
 		t.Fatalf("SnapshotRm: %v", err)
 	}
-	wantArgs := []string{"snapshot", "rm", "probe-snap"}
+	wantArgs := []string{"snapshot", "rm", "--", "probe-snap"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -386,7 +386,7 @@ func TestClientLogs_NoOptsJustNameAndJSON(t *testing.T) {
 		t.Errorf("returned body = %q, want pass-through", body)
 	}
 
-	wantArgs := []string{"logs", "probe", "--json"}
+	wantArgs := []string{"logs", "--json", "--", "probe"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -406,13 +406,14 @@ func TestClientLogs_FullOpts(t *testing.T) {
 		t.Fatalf("Logs: %v", err)
 	}
 	wantArgs := []string{
-		"logs", "probe",
+		"logs",
 		"--tail", "200",
 		"--since", "5m",
 		"--until", "2026-06-06T08:00:00Z",
 		"--source", "stdout,stderr",
 		"--grep", "ERROR",
 		"--json",
+		"--", "probe",
 	}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
@@ -430,7 +431,7 @@ func TestClientMetrics_InvokesMsbMetricsJSON(t *testing.T) {
 	if got.Name != "probe" || got.CPUPercent != 1.5 {
 		t.Errorf("got = %+v, want name=probe cpu=1.5", got)
 	}
-	wantArgs := []string{"metrics", "probe", "--format", "json"}
+	wantArgs := []string{"metrics", "--format", "json", "--", "probe"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -443,7 +444,7 @@ func TestClientVolumeRm_InvokesMsbVolumeRm(t *testing.T) {
 	if err := c.VolumeRm(context.Background(), "myvol"); err != nil {
 		t.Fatalf("VolumeRm: unexpected error: %v", err)
 	}
-	wantArgs := []string{"volume", "rm", "myvol"}
+	wantArgs := []string{"volume", "rm", "--", "myvol"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}

@@ -89,7 +89,7 @@ func (c *Client) List(ctx context.Context) ([]Sandbox, error) {
 // Inspect shells out to `msb inspect --format json <name>` and returns the
 // full detail view of a single sandbox.
 func (c *Client) Inspect(ctx context.Context, name string) (SandboxDetail, error) {
-	stdout, stderr, err := c.run(ctx, "inspect", "--format", "json", name)
+	stdout, stderr, err := c.run(ctx, "inspect", "--format", "json", "--", name)
 	if err != nil {
 		return SandboxDetail{}, wrapRunErr(stderr, err)
 	}
@@ -152,7 +152,7 @@ type Secret struct {
 	Host  string
 }
 
-// Create shells out to `msb create -n <name> [opts...] <image>`. msb creates
+// Create shells out to `msb create -n <name> [opts...] -- <image>`. msb creates
 // the sandbox and boots it in the background; a non-nil error here means the
 // create itself was rejected. Boot success is observable via Inspect.
 // sshKeyScriptName is the registered script name on PATH inside the guest
@@ -179,7 +179,7 @@ func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 		// as the command rather than as another flag.
 		_, stderr, err := c.run(ctx, "exec", opts.Name, "--", sshKeyScriptName)
 		if err != nil {
-			_, _, _ = c.run(ctx, "rm", "-f", opts.Name)
+			_, _, _ = c.run(ctx, "rm", "-f", "--", opts.Name)
 			return fmt.Errorf("install ssh keys after create: %w", wrapRunErr(stderr, err))
 		}
 	}
@@ -191,7 +191,7 @@ func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 // arg list is deterministic — handy for tests, audit logs, and reasoning.
 //
 // Two dispatch paths:
-//   - Image set     → `msb create -n <name> [opts...] <image>`
+//   - Image set     → `msb create -n <name> [opts...] -- <image>`
 //   - Snapshot set  → `msb run -d --snapshot <name> -n <name> [opts...]`
 //
 // msb v0.5.2 only accepts --snapshot on `run`, not `create`; -d (--detach)
@@ -223,8 +223,10 @@ func buildCreateArgs(opts CreateOpts) []string {
 		// ACCEPTED V1 RISK (issue #7): the secret value is inline in argv, so it
 		// is world-readable via /proc/<pid>/cmdline for the lifetime of the msb
 		// child. Bounded today — single host, msb-manager runs non-root, single
-		// trust domain (CONTEXT.md). Migrating to env/stdin needs a real msb to
-		// confirm `msb create` accepts secrets off-argv; TODO once available.
+		// trust domain (CONTEXT.md). Verified against msb v0.5.2: `--secret` only
+		// accepts ENV=VALUE@HOST inline — there is no --secret-file/env/stdin
+		// path to migrate to, so this stays an accepted risk until upstream adds
+		// one. The log-side leak is closed via redactSecrets below.
 		args = append(args, "--secret", s.Key+"="+s.Value+"@"+s.Host)
 	}
 	if len(opts.SSHKeys) > 0 {
@@ -233,10 +235,13 @@ func buildCreateArgs(opts CreateOpts) []string {
 		// we must include our own shebang.
 		args = append(args, "--script-raw", sshKeyScriptName+"="+sshKeysScript(opts.SSHKeys))
 	}
-	// For the image path, IMAGE is the trailing positional. For the snapshot
-	// path, msb run takes --snapshot in place of the image — nothing trails.
+	// For the image path, IMAGE is the trailing positional, passed after `--`
+	// so an image string can never be parsed as a flag (issue #3 defence in
+	// depth; verified msb v0.5.2 accepts `--` once all flags precede it). For
+	// the snapshot path, msb run takes --snapshot in place of the image —
+	// nothing trails, so no terminator is needed.
 	if opts.Snapshot == "" {
-		args = append(args, opts.Image)
+		args = append(args, "--", opts.Image)
 	}
 	return args
 }
@@ -306,32 +311,31 @@ func sortedKeys(m map[string]string) []string {
 //
 // Defence-in-depth note (issue #3): the primary guard against flag injection
 // is ValidName/ValidImage/ValidSize, applied in spec.Validate() and the path
-// handlers before any name reaches here. As a belt-and-braces second layer we
-// would also pass positional identifiers after a `--` terminator (as Create
-// already does for `exec … -- install-ssh-keys`), so even an identifier that
-// slipped validation couldn't be parsed as a flag. Adding `--` to the read and
-// lifecycle verbs (rm/start/stop/inspect/metrics/logs/volume/snapshot) needs a
-// real msb to confirm each subcommand accepts the terminator without changing
-// behaviour — TODO once an msb binary is available. Not blocking: validation
-// already closes the vector for well-behaved inputs.
+// handlers before any name reaches here. As a belt-and-braces second layer,
+// every trailing positional identifier is passed after a `--` terminator
+// (rm/start/stop/inspect/metrics/logs/volume/snapshot/create-image), so even an
+// identifier that slipped validation cannot be parsed as a flag. Verified
+// against msb v0.5.2: each subcommand accepts `--` provided all of its own
+// flags appear before it (logs/metrics therefore emit their flags first, then
+// `-- <name>`).
 func (c *Client) Start(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.run(ctx, "start", name)
+	_, stderr, err := c.run(ctx, "start", "--", name)
 	return wrapRunErr(stderr, err)
 }
 
 func (c *Client) Stop(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.run(ctx, "stop", name)
+	_, stderr, err := c.run(ctx, "stop", "--", name)
 	return wrapRunErr(stderr, err)
 }
 
 func (c *Client) Rm(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.run(ctx, "rm", name)
+	_, stderr, err := c.run(ctx, "rm", "--", name)
 	return wrapRunErr(stderr, err)
 }
 
@@ -346,11 +350,13 @@ type LogsOpts struct {
 	Grep   string // "" = no --grep (regex over body)
 }
 
-// Logs shells out to `msb logs <name> [opts...] --json` and returns the raw
+// Logs shells out to `msb logs [opts...] --json -- <name>` and returns the raw
 // JSONL bytes — msb owns the per-line shape, and pass-through preserves
-// streaming semantics (one JSON object per line, ndjson). Read-only.
+// streaming semantics (one JSON object per line, ndjson). Read-only. All flags
+// precede the `--` terminator so the name can never be parsed as a flag (issue
+// #3); msb v0.5.2 rejects options that appear after `--`.
 func (c *Client) Logs(ctx context.Context, name string, opts LogsOpts) ([]byte, error) {
-	args := []string{"logs", name}
+	args := []string{"logs"}
 	if opts.Tail > 0 {
 		args = append(args, "--tail", strconv.Itoa(opts.Tail))
 	}
@@ -366,7 +372,7 @@ func (c *Client) Logs(ctx context.Context, name string, opts LogsOpts) ([]byte, 
 	if opts.Grep != "" {
 		args = append(args, "--grep", opts.Grep)
 	}
-	args = append(args, "--json")
+	args = append(args, "--json", "--", name)
 	stdout, stderr, err := c.run(ctx, args...)
 	if err != nil {
 		return nil, wrapRunErr(stderr, err)
@@ -377,7 +383,7 @@ func (c *Client) Logs(ctx context.Context, name string, opts LogsOpts) ([]byte, 
 // Metrics shells out to `msb metrics <name> --format json` and returns the
 // parsed point-in-time snapshot. Read-only.
 func (c *Client) Metrics(ctx context.Context, name string) (Metrics, error) {
-	stdout, stderr, err := c.run(ctx, "metrics", name, "--format", "json")
+	stdout, stderr, err := c.run(ctx, "metrics", "--format", "json", "--", name)
 	if err != nil {
 		return Metrics{}, wrapRunErr(stderr, err)
 	}
@@ -409,7 +415,7 @@ func (c *Client) SnapshotCreate(ctx context.Context, from, dest string, labels m
 	if force {
 		args = append(args, "--force")
 	}
-	args = append(args, dest)
+	args = append(args, "--", dest)
 	_, stderr, err := c.run(ctx, args...)
 	return wrapRunErr(stderr, err)
 }
@@ -418,7 +424,7 @@ func (c *Client) SnapshotCreate(ctx context.Context, from, dest string, labels m
 func (c *Client) SnapshotRm(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.run(ctx, "snapshot", "rm", name)
+	_, stderr, err := c.run(ctx, "snapshot", "rm", "--", name)
 	return wrapRunErr(stderr, err)
 }
 
@@ -437,7 +443,7 @@ func (c *Client) VolumeList(ctx context.Context) ([]Volume, error) {
 func (c *Client) VolumeCreate(ctx context.Context, name, size string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.run(ctx, "volume", "create", "--size", size, name)
+	_, stderr, err := c.run(ctx, "volume", "create", "--size", size, "--", name)
 	return wrapRunErr(stderr, err)
 }
 
@@ -445,6 +451,6 @@ func (c *Client) VolumeCreate(ctx context.Context, name, size string) error {
 func (c *Client) VolumeRm(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.run(ctx, "volume", "rm", name)
+	_, stderr, err := c.run(ctx, "volume", "rm", "--", name)
 	return wrapRunErr(stderr, err)
 }
