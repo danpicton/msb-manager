@@ -56,9 +56,12 @@ type fakeMsb struct {
 	gotLogsName        string
 	gotLogsOpts        msb.LogsOpts
 	gotMetricsName     string
+
+	listCalls int
 }
 
 func (f *fakeMsb) List(_ context.Context) ([]msb.Sandbox, error) {
+	f.listCalls++
 	return f.listOut, f.listErr
 }
 func (f *fakeMsb) Inspect(_ context.Context, name string) (msb.SandboxDetail, error) {

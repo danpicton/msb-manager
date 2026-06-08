@@ -22,6 +22,11 @@ var (
 	ErrVolumeNotFound        = errors.New("msb: volume not found")
 	ErrSnapshotAlreadyExists = errors.New("msb: snapshot already exists")
 	ErrSnapshotNotFound      = errors.New("msb: snapshot not found")
+
+	// ErrTimeout is returned when an msb invocation exceeds its bounded
+	// lifetime (issue #4). It's distinct from a non-zero exit so the HTTP layer
+	// can map it to 504 Gateway Timeout rather than 500.
+	ErrTimeout = errors.New("msb: command timed out")
 )
 
 // classifyError inspects msb's stderr text and, if a known category is found,

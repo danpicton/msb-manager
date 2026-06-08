@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These tests use real subprocesses (true/false/printf — POSIX coreutils that
@@ -30,6 +31,28 @@ func TestExecRunner_NonZeroExitReturnsError(t *testing.T) {
 	_, _, err := r.Run(context.Background(), "false")
 	if err == nil {
 		t.Fatal("Run false: got nil error, want non-zero exit error")
+	}
+}
+
+// A cancelled context must kill the child and let Run return promptly, rather
+// than waiting out the full sleep. Uses `sleep` (a coreutil), not msb — this
+// guards exec.CommandContext's kill semantics that issue #4 relies on.
+func TestExecRunner_ContextCancellationKillsProcess(t *testing.T) {
+	r := ExecRunner{}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, _, err := r.Run(ctx, "sleep", "30")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Run sleep under cancelled ctx: got nil error, want kill error")
+	}
+	// Must return far sooner than the 30s sleep — the kill, plus at most the
+	// WaitDelay grace, not the full duration.
+	if elapsed > 10*time.Second {
+		t.Errorf("Run took %v, want prompt return after context cancellation", elapsed)
 	}
 }
 

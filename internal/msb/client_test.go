@@ -56,7 +56,7 @@ func TestClientInspect_InvokesMsbInspectJSON(t *testing.T) {
 	if r.gotName != "msb" {
 		t.Errorf("invoked binary = %q, want %q", r.gotName, "msb")
 	}
-	wantArgs := []string{"inspect", "--format", "json", "jsontest"}
+	wantArgs := []string{"inspect", "--format", "json", "--", "jsontest"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -70,7 +70,7 @@ func TestClientCreate_InvokesMsbCreate(t *testing.T) {
 		t.Fatalf("Create: unexpected error: %v", err)
 	}
 
-	wantArgs := []string{"create", "-n", "voltest", "alpine"}
+	wantArgs := []string{"create", "-n", "voltest", "--", "alpine"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -157,10 +157,61 @@ func TestClientCreate_SSHKeyInstallFailureRollsBack(t *testing.T) {
 		t.Fatalf("got %d calls, want 3 (create, exec, rm); calls=%v", len(calls), calls)
 	}
 	// Final call must be a force-rm of the sandbox we just created.
-	wantRm := []string{"rm", "-f", "x"}
+	wantRm := []string{"rm", "-f", "--", "x"}
 	if !reflect.DeepEqual(calls[2], wantRm) {
 		t.Errorf("rollback call = %v, want %v", calls[2], wantRm)
 	}
+}
+
+// The SSH-key rollback must run even when the caller's context is already
+// cancelled (client disconnected mid-exec), or the "atomic create" promise
+// breaks and a sandbox is orphaned (review #3). This runner records, per call,
+// the ctx error it observed, so we can prove the rollback ran with a detached
+// (non-cancelled) context.
+func TestClientCreate_RollbackDetachesFromCancelledContext(t *testing.T) {
+	r := &ctxRecordingRunner{
+		// create succeeds; exec install fails; rm rollback succeeds.
+		errs: []error{nil, errors.New("exit status 1"), nil},
+	}
+	c := NewClient("msb", r)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // caller already gone before Create returns
+
+	err := c.Create(ctx, CreateOpts{Name: "x", Image: "alpine", SSHKeys: []string{"ssh-ed25519 AAAA"}})
+	if err == nil {
+		t.Fatal("Create: got nil, want install-failure error")
+	}
+	if len(r.calls) != 3 {
+		t.Fatalf("got %d calls, want 3 (create, exec, rm); calls=%v", len(r.calls), r.calls)
+	}
+	if want := []string{"rm", "-f", "--", "x"}; !reflect.DeepEqual(r.calls[2], want) {
+		t.Errorf("rollback call = %v, want %v", r.calls[2], want)
+	}
+	// The rollback (3rd call) must see a live context, not the cancelled parent.
+	if r.ctxErrs[2] != nil {
+		t.Errorf("rollback ran with ctx.Err()=%v, want nil (detached from cancelled parent)", r.ctxErrs[2])
+	}
+}
+
+// ctxRecordingRunner records each call's args and the ctx error observed when
+// it was invoked.
+type ctxRecordingRunner struct {
+	calls   [][]string
+	ctxErrs []error
+	errs    []error
+	idx     int
+}
+
+func (r *ctxRecordingRunner) Run(ctx context.Context, _ string, args ...string) ([]byte, []byte, error) {
+	r.calls = append(r.calls, append([]string(nil), args...))
+	r.ctxErrs = append(r.ctxErrs, ctx.Err())
+	var err error
+	if r.idx < len(r.errs) {
+		err = r.errs[r.idx]
+	}
+	r.idx++
+	return nil, nil, err
 }
 
 type recordingRunner struct {
@@ -245,7 +296,7 @@ func TestClientCreate_FullOpts(t *testing.T) {
 		"-p", "9090:90",
 		"--secret", "GITHUB_TOKEN=ghp_x@github.com",
 		"--secret", "OPENAI_KEY=sk-y@api.openai.com",
-		"alpine",
+		"--", "alpine",
 	}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
@@ -259,7 +310,7 @@ func TestClientStart_InvokesMsbStart(t *testing.T) {
 	if err := c.Start(context.Background(), "voltest"); err != nil {
 		t.Fatalf("Start: unexpected error: %v", err)
 	}
-	wantArgs := []string{"start", "voltest"}
+	wantArgs := []string{"start", "--", "voltest"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -272,7 +323,7 @@ func TestClientStop_InvokesMsbStop(t *testing.T) {
 	if err := c.Stop(context.Background(), "voltest"); err != nil {
 		t.Fatalf("Stop: unexpected error: %v", err)
 	}
-	wantArgs := []string{"stop", "voltest"}
+	wantArgs := []string{"stop", "--", "voltest"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -285,7 +336,7 @@ func TestClientRm_InvokesMsbRm(t *testing.T) {
 	if err := c.Rm(context.Background(), "voltest"); err != nil {
 		t.Fatalf("Rm: unexpected error: %v", err)
 	}
-	wantArgs := []string{"rm", "voltest"}
+	wantArgs := []string{"rm", "--", "voltest"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -298,7 +349,7 @@ func TestClientVolumeCreate_InvokesMsbVolumeCreate(t *testing.T) {
 	if err := c.VolumeCreate(context.Background(), "myvol", "1G"); err != nil {
 		t.Fatalf("VolumeCreate: unexpected error: %v", err)
 	}
-	wantArgs := []string{"volume", "create", "--size", "1G", "myvol"}
+	wantArgs := []string{"volume", "create", "--size", "1G", "--", "myvol"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -343,7 +394,7 @@ func TestClientSnapshotCreate_InvokesWithSortedLabels(t *testing.T) {
 		"--from", "probe",
 		"--label", "msb.parent=test",
 		"--label", "team=ops",
-		"probe-snap",
+		"--", "probe-snap",
 	}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
@@ -356,7 +407,7 @@ func TestClientSnapshotCreate_ForceAddsFlag(t *testing.T) {
 	if err := c.SnapshotCreate(context.Background(), "probe", "probe-snap", nil, true); err != nil {
 		t.Fatalf("SnapshotCreate: %v", err)
 	}
-	wantArgs := []string{"snapshot", "create", "--from", "probe", "--force", "probe-snap"}
+	wantArgs := []string{"snapshot", "create", "--from", "probe", "--force", "--", "probe-snap"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -368,7 +419,7 @@ func TestClientSnapshotRm_InvokesMsbSnapshotRm(t *testing.T) {
 	if err := c.SnapshotRm(context.Background(), "probe-snap"); err != nil {
 		t.Fatalf("SnapshotRm: %v", err)
 	}
-	wantArgs := []string{"snapshot", "rm", "probe-snap"}
+	wantArgs := []string{"snapshot", "rm", "--", "probe-snap"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -386,7 +437,7 @@ func TestClientLogs_NoOptsJustNameAndJSON(t *testing.T) {
 		t.Errorf("returned body = %q, want pass-through", body)
 	}
 
-	wantArgs := []string{"logs", "probe", "--json"}
+	wantArgs := []string{"logs", "--json", "--", "probe"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -406,13 +457,14 @@ func TestClientLogs_FullOpts(t *testing.T) {
 		t.Fatalf("Logs: %v", err)
 	}
 	wantArgs := []string{
-		"logs", "probe",
+		"logs",
 		"--tail", "200",
 		"--since", "5m",
 		"--until", "2026-06-06T08:00:00Z",
 		"--source", "stdout,stderr",
 		"--grep", "ERROR",
 		"--json",
+		"--", "probe",
 	}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
@@ -430,7 +482,7 @@ func TestClientMetrics_InvokesMsbMetricsJSON(t *testing.T) {
 	if got.Name != "probe" || got.CPUPercent != 1.5 {
 		t.Errorf("got = %+v, want name=probe cpu=1.5", got)
 	}
-	wantArgs := []string{"metrics", "probe", "--format", "json"}
+	wantArgs := []string{"metrics", "--format", "json", "--", "probe"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -443,7 +495,7 @@ func TestClientVolumeRm_InvokesMsbVolumeRm(t *testing.T) {
 	if err := c.VolumeRm(context.Background(), "myvol"); err != nil {
 		t.Fatalf("VolumeRm: unexpected error: %v", err)
 	}
-	wantArgs := []string{"volume", "rm", "myvol"}
+	wantArgs := []string{"volume", "rm", "--", "myvol"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -511,6 +563,105 @@ type concurrencyRunner struct {
 func (cr *concurrencyRunner) Run(_ context.Context, _ string, _ ...string) ([]byte, []byte, error) {
 	cr.onCall()
 	return nil, nil, nil
+}
+
+// A failed create whose stderr echoes the offending --secret argument must not
+// leak the secret value into the returned (and therefore logged) error (issue
+// #7). Redaction must not break sentinel classification — errors.Is still works.
+// Mirrors TestParseInspect_DoesNotLeakSecretValue on the create/log side.
+func TestClientCreate_DoesNotLeakSecretInError(t *testing.T) {
+	const secretVal = "ghp_SUPER_SECRET_do_not_log"
+	r := &fakeRunner{
+		stderr: []byte("error: sandbox already exists: rejected --secret GITHUB_TOKEN=" +
+			secretVal + "@github.com\n"),
+		err: errors.New("exit status 1"),
+	}
+	c := NewClient("msb", r)
+
+	err := c.Create(context.Background(), CreateOpts{
+		Name: "x", Image: "alpine",
+		Secrets: []Secret{{Key: "GITHUB_TOKEN", Value: secretVal, Host: "github.com"}},
+	})
+	if err == nil {
+		t.Fatal("Create: got nil, want error")
+	}
+	if strings.Contains(err.Error(), secretVal) {
+		t.Fatalf("secret value leaked through create error: %v", err)
+	}
+	// The sentinel must still be reachable for HTTP status mapping.
+	if !errors.Is(err, ErrSandboxAlreadyExists) {
+		t.Errorf("redaction broke sentinel classification: %v", err)
+	}
+}
+
+// blockingRunner simulates a hung msb: it blocks until ctx is cancelled (the
+// timeout firing, then exec killing the child) and then returns ctx.Err(),
+// mirroring how exec.CommandContext surfaces a killed process.
+type blockingRunner struct {
+	started chan struct{} // closed-ish signal: receives once per call entry
+}
+
+func (b *blockingRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, []byte, error) {
+	if b.started != nil {
+		select {
+		case b.started <- struct{}{}:
+		default:
+		}
+	}
+	<-ctx.Done()
+	return nil, nil, ctx.Err()
+}
+
+// A wedged msb must fail the one request with a timeout error rather than hang
+// forever (issue #4). The per-invocation context.WithTimeout cancels the call.
+func TestClient_TimeoutReturnsErrTimeout(t *testing.T) {
+	r := &blockingRunner{}
+	c := NewClientWithTimeout("msb", r, 20*time.Millisecond)
+
+	err := c.Create(context.Background(), CreateOpts{Name: "x", Image: "alpine"})
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("Create on hung msb: got %v, want wrap of ErrTimeout", err)
+	}
+}
+
+// The mutex the mutating commands take must be released after a timeout, or one
+// wedged call would deadlock the whole control plane — the exact failure the
+// timeout exists to prevent (issue #4).
+func TestClient_TimeoutFreesMutex(t *testing.T) {
+	r := &blockingRunner{started: make(chan struct{}, 2)}
+	c := NewClientWithTimeout("msb", r, 20*time.Millisecond)
+
+	// First mutating call times out (and must release c.mu on the way out).
+	if err := c.Create(context.Background(), CreateOpts{Name: "a", Image: "alpine"}); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("first Create: got %v, want ErrTimeout", err)
+	}
+
+	// Second mutating call: if the mutex were still held this blocks forever.
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Stop(context.Background(), "b")
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("second call: got %v, want ErrTimeout", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second mutating call blocked — mutex not released after timeout")
+	}
+}
+
+// A timeout must be distinguishable from an ordinary non-zero exit: ErrTimeout,
+// not a classified sentinel and not a bare exit error (the HTTP layer maps it
+// to 504, others to their own statuses / 500).
+func TestClient_ReadTimeout_AlsoBounded(t *testing.T) {
+	r := &blockingRunner{}
+	c := NewClientWithTimeout("msb", r, 20*time.Millisecond)
+
+	_, err := c.List(context.Background())
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("List on hung msb: got %v, want ErrTimeout", err)
+	}
 }
 
 // When the runner returns a non-zero exit, Client methods classify the stderr

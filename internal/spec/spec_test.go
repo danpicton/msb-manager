@@ -217,6 +217,63 @@ func TestValidate_SSHKeysRejectMalformedLines(t *testing.T) {
 	}
 }
 
+// Identifier validation (issue #3): a name beginning with '-' would be parsed
+// by msb as a flag, not a value. Reject malformed names/images/snapshots before
+// they can reach the adapter.
+func TestValidate_RejectsMalformedName(t *testing.T) {
+	cases := []Spec{
+		{Name: "--force", Image: "alpine"},
+		{Name: "-f", Image: "alpine"},
+		{Name: "bad name", Image: "alpine"},
+		{Name: "a/b", Image: "alpine"},
+		{Name: ".hidden", Image: "alpine"},
+	}
+	for _, s := range cases {
+		if err := s.Validate(); err == nil {
+			t.Errorf("Validate(%+v): got nil, want error for malformed name", s)
+		}
+	}
+}
+
+func TestValidate_RejectsMalformedImage(t *testing.T) {
+	cases := []Spec{
+		{Name: "x", Image: "-alpine"},
+		{Name: "x", Image: "--rm"},
+		{Name: "x", Image: "al pine"},
+	}
+	for _, s := range cases {
+		if err := s.Validate(); err == nil {
+			t.Errorf("Validate(%+v): got nil, want error for malformed image", s)
+		}
+	}
+}
+
+func TestValidate_RejectsMalformedSnapshot(t *testing.T) {
+	cases := []Spec{
+		{Name: "x", Snapshot: "--force"},
+		{Name: "x", Snapshot: "-f"},
+		{Name: "x", Snapshot: "a/b"},
+	}
+	for _, s := range cases {
+		if err := s.Validate(); err == nil {
+			t.Errorf("Validate(%+v): got nil, want error for malformed snapshot", s)
+		}
+	}
+}
+
+func TestValidate_RejectsMalformedVolumeName(t *testing.T) {
+	cases := []Spec{
+		{Name: "x", Image: "alpine", Volume: &Volume{Name: "--force", Mount: "/workspace"}},
+		{Name: "x", Image: "alpine", Volume: &Volume{Name: "-v", Mount: "/workspace"}},
+		{Name: "x", Image: "alpine", Volume: &Volume{Name: "bad name", Mount: "/workspace"}},
+	}
+	for _, s := range cases {
+		if err := s.Validate(); err == nil {
+			t.Errorf("Validate(%+v): got nil, want error for malformed volume name", s)
+		}
+	}
+}
+
 func TestParse_RejectsUnknownFields(t *testing.T) {
 	body := []byte(`
 name: voltest

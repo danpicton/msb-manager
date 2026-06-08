@@ -14,6 +14,9 @@ import (
 func handleLogs(client MsbClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if !validPathName(w, name) {
+			return
+		}
 		q := r.URL.Query()
 		opts := msb.LogsOpts{
 			Since:  q.Get("since"),
@@ -46,7 +49,11 @@ func handleLogs(client MsbClient) http.HandlerFunc {
 // handleMetrics returns the parsed point-in-time metrics object as JSON.
 func handleMetrics(client MsbClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		m, err := client.Metrics(r.Context(), r.PathValue("name"))
+		name := r.PathValue("name")
+		if !validPathName(w, name) {
+			return
+		}
+		m, err := client.Metrics(r.Context(), name)
 		if err != nil {
 			writeAdapterError(w, r, "read metrics", err)
 			return

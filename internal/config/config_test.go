@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // envFunc builds a getenv-style lookup from a map.
 func envFunc(vars map[string]string) func(string) string {
@@ -36,6 +39,51 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	}
 	if cfg.DataDir == "" {
 		t.Error("DataDir default = empty, want a non-empty path")
+	}
+	if cfg.CmdTimeout != DefaultCmdTimeout {
+		t.Errorf("CmdTimeout default = %v, want %v", cfg.CmdTimeout, DefaultCmdTimeout)
+	}
+}
+
+func TestLoad_CmdTimeoutOverride(t *testing.T) {
+	cfg, err := Load(envFunc(map[string]string{
+		"MSB_MANAGER_TOKEN":       "s3cret",
+		"MSB_MANAGER_CMD_TIMEOUT": "90s",
+	}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if cfg.CmdTimeout != 90*time.Second {
+		t.Errorf("CmdTimeout = %v, want 90s", cfg.CmdTimeout)
+	}
+}
+
+func TestLoad_CmdTimeoutInvalidErrors(t *testing.T) {
+	cases := []string{"nonsense", "0", "-5s", "150s", "10m"}
+	for _, v := range cases {
+		_, err := Load(envFunc(map[string]string{
+			"MSB_MANAGER_TOKEN":       "s3cret",
+			"MSB_MANAGER_CMD_TIMEOUT": v,
+		}))
+		if err == nil {
+			t.Errorf("Load(CMD_TIMEOUT=%q): got nil, want error", v)
+		}
+	}
+}
+
+// The cap exists so CmdTimeout can never exceed the HTTP WriteTimeout — a
+// timed-out call must still be able to write its 504 (review #1). The boundary
+// value (== MaxCmdTimeout) is allowed.
+func TestLoad_CmdTimeoutAtCapAllowed(t *testing.T) {
+	cfg, err := Load(envFunc(map[string]string{
+		"MSB_MANAGER_TOKEN":       "s3cret",
+		"MSB_MANAGER_CMD_TIMEOUT": MaxCmdTimeout.String(),
+	}))
+	if err != nil {
+		t.Fatalf("Load(CMD_TIMEOUT=%s): unexpected error: %v", MaxCmdTimeout, err)
+	}
+	if cfg.CmdTimeout != MaxCmdTimeout {
+		t.Errorf("CmdTimeout = %v, want %v", cfg.CmdTimeout, MaxCmdTimeout)
 	}
 }
 
