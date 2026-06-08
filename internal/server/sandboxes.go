@@ -187,6 +187,10 @@ func statusForAdapterError(op string, err error) (int, string) {
 		return http.StatusConflict, "snapshot already exists"
 	case errors.Is(err, msb.ErrSnapshotNotFound):
 		return http.StatusNotFound, "snapshot not found"
+	case errors.Is(err, msb.ErrTimeout):
+		// A wedged msb call hit its bound (issue #4); surface it as an upstream
+		// timeout, not a generic 500.
+		return http.StatusGatewayTimeout, "msb command timed out"
 	default:
 		return http.StatusInternalServerError, op + " failed"
 	}

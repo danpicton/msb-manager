@@ -513,6 +513,76 @@ func (cr *concurrencyRunner) Run(_ context.Context, _ string, _ ...string) ([]by
 	return nil, nil, nil
 }
 
+// blockingRunner simulates a hung msb: it blocks until ctx is cancelled (the
+// timeout firing, then exec killing the child) and then returns ctx.Err(),
+// mirroring how exec.CommandContext surfaces a killed process.
+type blockingRunner struct {
+	started chan struct{} // closed-ish signal: receives once per call entry
+}
+
+func (b *blockingRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, []byte, error) {
+	if b.started != nil {
+		select {
+		case b.started <- struct{}{}:
+		default:
+		}
+	}
+	<-ctx.Done()
+	return nil, nil, ctx.Err()
+}
+
+// A wedged msb must fail the one request with a timeout error rather than hang
+// forever (issue #4). The per-invocation context.WithTimeout cancels the call.
+func TestClient_TimeoutReturnsErrTimeout(t *testing.T) {
+	r := &blockingRunner{}
+	c := NewClientWithTimeout("msb", r, 20*time.Millisecond)
+
+	err := c.Create(context.Background(), CreateOpts{Name: "x", Image: "alpine"})
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("Create on hung msb: got %v, want wrap of ErrTimeout", err)
+	}
+}
+
+// The mutex the mutating commands take must be released after a timeout, or one
+// wedged call would deadlock the whole control plane — the exact failure the
+// timeout exists to prevent (issue #4).
+func TestClient_TimeoutFreesMutex(t *testing.T) {
+	r := &blockingRunner{started: make(chan struct{}, 2)}
+	c := NewClientWithTimeout("msb", r, 20*time.Millisecond)
+
+	// First mutating call times out (and must release c.mu on the way out).
+	if err := c.Create(context.Background(), CreateOpts{Name: "a", Image: "alpine"}); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("first Create: got %v, want ErrTimeout", err)
+	}
+
+	// Second mutating call: if the mutex were still held this blocks forever.
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Stop(context.Background(), "b")
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("second call: got %v, want ErrTimeout", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second mutating call blocked — mutex not released after timeout")
+	}
+}
+
+// A timeout must be distinguishable from an ordinary non-zero exit: ErrTimeout,
+// not a classified sentinel and not a bare exit error (the HTTP layer maps it
+// to 504, others to their own statuses / 500).
+func TestClient_ReadTimeout_AlsoBounded(t *testing.T) {
+	r := &blockingRunner{}
+	c := NewClientWithTimeout("msb", r, 20*time.Millisecond)
+
+	_, err := c.List(context.Background())
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("List on hung msb: got %v, want ErrTimeout", err)
+	}
+}
+
 // When the runner returns a non-zero exit, Client methods classify the stderr
 // and wrap the recognised sentinel. The HTTP layer errors.Is()-es to pick a
 // status. Inspect is the easiest to exercise — its real-world failure mode is

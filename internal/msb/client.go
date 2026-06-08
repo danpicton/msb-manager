@@ -8,12 +8,20 @@ package msb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
+
+// DefaultCmdTimeout bounds a single msb invocation when no override is
+// configured. msb v0.5.2 can hang under contention (CONTEXT verification #3),
+// and the mutating mutex means one hung call would otherwise block every other
+// mutating request; the timeout caps the blast radius to a single request.
+const DefaultCmdTimeout = 60 * time.Second
 
 // Runner is the subprocess boundary. Tests inject a fake; production wires up
 // an os/exec-backed implementation. Returning stdout and stderr separately
@@ -31,20 +39,47 @@ type Runner interface {
 // methods (List/Inspect) don't take the mutex — they're cheap and don't race
 // the supervisor against itself.
 type Client struct {
-	bin    string
-	runner Runner
-	mu     sync.Mutex
+	bin     string
+	runner  Runner
+	timeout time.Duration
+	mu      sync.Mutex
 }
 
-// NewClient binds the configured msb binary path to a Runner.
+// NewClient binds the configured msb binary path to a Runner, using
+// DefaultCmdTimeout for each invocation.
 func NewClient(bin string, runner Runner) *Client {
-	return &Client{bin: bin, runner: runner}
+	return NewClientWithTimeout(bin, runner, DefaultCmdTimeout)
+}
+
+// NewClientWithTimeout is NewClient with an explicit per-invocation timeout. A
+// non-positive timeout falls back to DefaultCmdTimeout so a misconfiguration
+// can't disable the bound entirely.
+func NewClientWithTimeout(bin string, runner Runner, timeout time.Duration) *Client {
+	if timeout <= 0 {
+		timeout = DefaultCmdTimeout
+	}
+	return &Client{bin: bin, runner: runner, timeout: timeout}
+}
+
+// run is the single choke point for every msb invocation. It bounds the call
+// with a per-invocation timeout so a wedged msb fails the one request (freeing
+// any mutex the caller holds) instead of hanging forever (issue #4). On the
+// timeout firing, exec.CommandContext kills the child; we surface ErrTimeout so
+// the HTTP layer maps it to 504 rather than 500.
+func (c *Client) run(ctx context.Context, args ...string) (stdout, stderr []byte, err error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	stdout, stderr, err = c.runner.Run(ctx, c.bin, args...)
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return stdout, stderr, fmt.Errorf("%w after %s: %v", ErrTimeout, c.timeout, err)
+	}
+	return stdout, stderr, err
 }
 
 // List shells out to `msb ls --format json` and returns the summary view of
 // every sandbox msb knows about.
 func (c *Client) List(ctx context.Context) ([]Sandbox, error) {
-	stdout, stderr, err := c.runner.Run(ctx, c.bin, "ls", "--format", "json")
+	stdout, stderr, err := c.run(ctx, "ls", "--format", "json")
 	if err != nil {
 		return nil, wrapRunErr(stderr, err)
 	}
@@ -54,7 +89,7 @@ func (c *Client) List(ctx context.Context) ([]Sandbox, error) {
 // Inspect shells out to `msb inspect --format json <name>` and returns the
 // full detail view of a single sandbox.
 func (c *Client) Inspect(ctx context.Context, name string) (SandboxDetail, error) {
-	stdout, stderr, err := c.runner.Run(ctx, c.bin, "inspect", "--format", "json", name)
+	stdout, stderr, err := c.run(ctx, "inspect", "--format", "json", name)
 	if err != nil {
 		return SandboxDetail{}, wrapRunErr(stderr, err)
 	}
@@ -67,6 +102,11 @@ func (c *Client) Inspect(ctx context.Context, name string) (SandboxDetail, error
 func wrapRunErr(stderr []byte, err error) error {
 	if err == nil {
 		return nil
+	}
+	// A timeout is already a typed sentinel; don't let stderr classification
+	// (usually empty on a kill) shadow the 504 mapping.
+	if errors.Is(err, ErrTimeout) {
+		return err
 	}
 	if classified := classifyError(string(stderr)); classified != nil {
 		return classified
@@ -123,7 +163,7 @@ func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	args := buildCreateArgs(opts)
-	if _, stderr, err := c.runner.Run(ctx, c.bin, args...); err != nil {
+	if _, stderr, err := c.run(ctx, args...); err != nil {
 		return wrapRunErr(stderr, err)
 	}
 	// msb's --script REGISTERS scripts on PATH but doesn't auto-run them. The
@@ -133,9 +173,9 @@ func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 	if len(opts.SSHKeys) > 0 {
 		// `--` terminates msb's own flag parsing so the script name is taken
 		// as the command rather than as another flag.
-		_, stderr, err := c.runner.Run(ctx, c.bin, "exec", opts.Name, "--", sshKeyScriptName)
+		_, stderr, err := c.run(ctx, "exec", opts.Name, "--", sshKeyScriptName)
 		if err != nil {
-			_, _, _ = c.runner.Run(ctx, c.bin, "rm", "-f", opts.Name)
+			_, _, _ = c.run(ctx, "rm", "-f", opts.Name)
 			return fmt.Errorf("install ssh keys after create: %w", wrapRunErr(stderr, err))
 		}
 	}
@@ -251,21 +291,21 @@ func sortedKeys(m map[string]string) []string {
 func (c *Client) Start(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.runner.Run(ctx, c.bin, "start", name)
+	_, stderr, err := c.run(ctx, "start", name)
 	return wrapRunErr(stderr, err)
 }
 
 func (c *Client) Stop(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.runner.Run(ctx, c.bin, "stop", name)
+	_, stderr, err := c.run(ctx, "stop", name)
 	return wrapRunErr(stderr, err)
 }
 
 func (c *Client) Rm(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.runner.Run(ctx, c.bin, "rm", name)
+	_, stderr, err := c.run(ctx, "rm", name)
 	return wrapRunErr(stderr, err)
 }
 
@@ -301,7 +341,7 @@ func (c *Client) Logs(ctx context.Context, name string, opts LogsOpts) ([]byte, 
 		args = append(args, "--grep", opts.Grep)
 	}
 	args = append(args, "--json")
-	stdout, stderr, err := c.runner.Run(ctx, c.bin, args...)
+	stdout, stderr, err := c.run(ctx, args...)
 	if err != nil {
 		return nil, wrapRunErr(stderr, err)
 	}
@@ -311,7 +351,7 @@ func (c *Client) Logs(ctx context.Context, name string, opts LogsOpts) ([]byte, 
 // Metrics shells out to `msb metrics <name> --format json` and returns the
 // parsed point-in-time snapshot. Read-only.
 func (c *Client) Metrics(ctx context.Context, name string) (Metrics, error) {
-	stdout, stderr, err := c.runner.Run(ctx, c.bin, "metrics", name, "--format", "json")
+	stdout, stderr, err := c.run(ctx, "metrics", name, "--format", "json")
 	if err != nil {
 		return Metrics{}, wrapRunErr(stderr, err)
 	}
@@ -320,7 +360,7 @@ func (c *Client) Metrics(ctx context.Context, name string) (Metrics, error) {
 
 // SnapshotList shells out to `msb snapshot ls --format json`. Read-only.
 func (c *Client) SnapshotList(ctx context.Context) ([]Snapshot, error) {
-	stdout, stderr, err := c.runner.Run(ctx, c.bin, "snapshot", "ls", "--format", "json")
+	stdout, stderr, err := c.run(ctx, "snapshot", "ls", "--format", "json")
 	if err != nil {
 		return nil, wrapRunErr(stderr, err)
 	}
@@ -344,7 +384,7 @@ func (c *Client) SnapshotCreate(ctx context.Context, from, dest string, labels m
 		args = append(args, "--force")
 	}
 	args = append(args, dest)
-	_, stderr, err := c.runner.Run(ctx, c.bin, args...)
+	_, stderr, err := c.run(ctx, args...)
 	return wrapRunErr(stderr, err)
 }
 
@@ -352,14 +392,14 @@ func (c *Client) SnapshotCreate(ctx context.Context, from, dest string, labels m
 func (c *Client) SnapshotRm(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.runner.Run(ctx, c.bin, "snapshot", "rm", name)
+	_, stderr, err := c.run(ctx, "snapshot", "rm", name)
 	return wrapRunErr(stderr, err)
 }
 
 // VolumeList shells out to `msb volume ls --format json`. Read-only, so it
 // doesn't take the mutating-commands mutex.
 func (c *Client) VolumeList(ctx context.Context) ([]Volume, error) {
-	stdout, stderr, err := c.runner.Run(ctx, c.bin, "volume", "ls", "--format", "json")
+	stdout, stderr, err := c.run(ctx, "volume", "ls", "--format", "json")
 	if err != nil {
 		return nil, wrapRunErr(stderr, err)
 	}
@@ -371,7 +411,7 @@ func (c *Client) VolumeList(ctx context.Context) ([]Volume, error) {
 func (c *Client) VolumeCreate(ctx context.Context, name, size string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.runner.Run(ctx, c.bin, "volume", "create", "--size", size, name)
+	_, stderr, err := c.run(ctx, "volume", "create", "--size", size, name)
 	return wrapRunErr(stderr, err)
 }
 
@@ -379,6 +419,6 @@ func (c *Client) VolumeCreate(ctx context.Context, name, size string) error {
 func (c *Client) VolumeRm(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.runner.Run(ctx, c.bin, "volume", "rm", name)
+	_, stderr, err := c.run(ctx, "volume", "rm", name)
 	return wrapRunErr(stderr, err)
 }

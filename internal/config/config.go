@@ -3,7 +3,11 @@
 // safe default (loopback bind, "msb" on PATH, /var/lib/msb-manager state).
 package config
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"time"
+)
 
 // Config is the resolved runtime configuration.
 type Config struct {
@@ -21,6 +25,10 @@ type Config struct {
 	// and any other minimal server-owned state. We never store a project
 	// registry; msb ls remains the source of truth.
 	DataDir string
+
+	// CmdTimeout bounds a single msb invocation. A hung msb otherwise holds the
+	// mutating mutex and blocks every other mutating request (issue #4).
+	CmdTimeout time.Duration
 }
 
 // ErrTokenRequired is returned by Load when MSB_MANAGER_TOKEN is unset or empty.
@@ -33,6 +41,11 @@ const (
 	DefaultListenAddr = "127.0.0.1:8080"
 	DefaultMsbPath    = "msb"
 	DefaultDataDir    = "/var/lib/msb-manager"
+	// DefaultCmdTimeout bounds a single msb invocation when MSB_MANAGER_CMD_TIMEOUT
+	// is unset. Kept in sync with msb.DefaultCmdTimeout and below the HTTP
+	// server's WriteTimeout (cmd/msb-manager) so a timed-out call can still
+	// write its 504.
+	DefaultCmdTimeout = 60 * time.Second
 )
 
 // Load resolves configuration from getenv (injected so tests don't touch real
@@ -42,12 +55,34 @@ func Load(getenv func(string) string) (Config, error) {
 	if token == "" {
 		return Config{}, ErrTokenRequired
 	}
+	cmdTimeout, err := parseTimeout(getenv("MSB_MANAGER_CMD_TIMEOUT"))
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		Token:      token,
 		ListenAddr: orDefault(getenv("MSB_MANAGER_LISTEN_ADDR"), DefaultListenAddr),
 		MsbPath:    orDefault(getenv("MSB_MANAGER_MSB_PATH"), DefaultMsbPath),
 		DataDir:    orDefault(getenv("MSB_MANAGER_DATA_DIR"), DefaultDataDir),
+		CmdTimeout: cmdTimeout,
 	}, nil
+}
+
+// parseTimeout resolves MSB_MANAGER_CMD_TIMEOUT: empty falls back to the
+// default; otherwise it must be a positive Go duration (e.g. "60s", "2m"). A
+// zero or negative value is rejected rather than silently disabling the bound.
+func parseTimeout(v string) (time.Duration, error) {
+	if v == "" {
+		return DefaultCmdTimeout, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("config: MSB_MANAGER_CMD_TIMEOUT %q is not a valid duration: %w", v, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("config: MSB_MANAGER_CMD_TIMEOUT must be positive, got %s", d)
+	}
+	return d, nil
 }
 
 func orDefault(v, def string) string {

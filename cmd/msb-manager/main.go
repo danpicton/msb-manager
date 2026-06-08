@@ -102,7 +102,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	msbClient := msb.NewClient(cfg.MsbPath, msb.ExecRunner{})
+	msbClient := msb.NewClientWithTimeout(cfg.MsbPath, msb.ExecRunner{}, cfg.CmdTimeout)
 
 	// Seed the volume lock from msb's actual running state so a crash-restart
 	// doesn't briefly think every volume is free.

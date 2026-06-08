@@ -4,7 +4,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"msb-manager/internal/msb"
 )
+
+// A timed-out msb invocation (issue #4) surfaces as 504 Gateway Timeout, not a
+// generic 500.
+func TestStatusMapping_Timeout(t *testing.T) {
+	client := &fakeMsb{inspectErr: msb.ErrTimeout}
+	srv := New(Config{Token: testToken}, client)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodGet, "/sandboxes/probe"))
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504; body=%s", rec.Code, rec.Body.String())
+	}
+}
 
 // Issue #3: a path segment beginning with '-' (or its percent-encoded form
 // %2D%2Dforce) reaches a handler as "--force" and would be passed to msb as a
