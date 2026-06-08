@@ -45,6 +45,7 @@ v1 is a **single trust domain** — any valid bearer token has full access to ev
 
 - **Language: Go.** I/O-bound subprocess orchestration; stdlib does the whole job.
 - **Stateless server, client is source of truth.** No database. `msb ls --format json` is the source of truth for "what exists"; the client holds project specs/secrets. msb-manager shells out to the `msb` CLI (not the SDK).
+- **Ops-endpoint auth boundary.** `/healthz` (shallow, cheap) and `/readyz` are the only unauthenticated endpoints; everything else is behind the bearer token. `/readyz` runs `msb ls` to prove the supervisor is up, so its result is cached for a short TTL (`readinessTTL`, 2s) to stop an unauthenticated caller driving unbounded — and potentially hanging — subprocesses (issue #6). Caching was chosen over requiring auth so the probe contract stays simple and Caddy/systemd need no token plumbing.
 - **Persistence via named microsandbox volumes**, not host-side folders. Everything is driven remotely over the API — the operator never touches the host filesystem.
 - **Create accepts a declarative spec** (YAML or JSON), compose-style; a thin client CLI may offer flag-based convenience on top of the same spec.
 - **Credentials applied per-create, kept out of snapshots.** Egress tokens via `--secret KEY=VAL@host`; SSH public keys installed into the guest at create; private/file secrets mounted, not baked.

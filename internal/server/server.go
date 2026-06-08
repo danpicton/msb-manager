@@ -7,6 +7,8 @@ package server
 import (
 	"context"
 	"net/http"
+	"sync"
+	"time"
 
 	"msb-manager/internal/lock"
 	"msb-manager/internal/msb"
@@ -66,7 +68,7 @@ func NewWithLock(cfg Config, client MsbClient, vlock *lock.VolumeLock) http.Hand
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", handleHealthz)
-	root.HandleFunc("GET /readyz", handleReadyz(client))
+	root.HandleFunc("GET /readyz", handleReadyz(client, &readinessCache{ttl: readinessTTL}))
 	root.Handle("/", requireBearer(cfg.Token, protected))
 	return root
 }
@@ -77,13 +79,52 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// readinessTTL is how long a /readyz result is reused before a fresh `msb ls`
+// runs. Short enough that a probe sees a genuinely-recent signal, long enough
+// that a burst of probes collapses to one subprocess.
+const readinessTTL = 2 * time.Second
+
+// readinessCache memoises the readiness probe result for a short TTL.
+//
+// DECISION (issue #6): /readyz stays unauthenticated so Caddy/systemd can probe
+// it the same way as /healthz, but it must not let any unauthenticated caller
+// drive unbounded `msb ls` subprocesses (a DoS-amplification vector, worse
+// because `msb ls` itself can hang — CONTEXT verification #3). Caching, rather
+// than requiring auth, was chosen because it preserves the simple probe contract
+// and needs no token plumbing into Caddy's health check. The TTL bounds the
+// subprocess rate to at most one per interval regardless of request volume.
+type readinessCache struct {
+	ttl       time.Duration
+	mu        sync.Mutex
+	checkedAt time.Time
+	err       error
+	valid     bool
+}
+
+// ready returns the cached readiness result if it's within the TTL, otherwise
+// runs a fresh `msb ls`. The lock is held across the List call so a concurrent
+// burst produces a single subprocess (the rest wait, then read the cache).
+func (rc *readinessCache) ready(ctx context.Context, client MsbClient) error {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if rc.valid && time.Since(rc.checkedAt) < rc.ttl {
+		return rc.err
+	}
+	_, err := client.List(ctx)
+	rc.checkedAt = time.Now()
+	rc.err = err
+	rc.valid = true
+	return err
+}
+
 // handleReadyz reports readiness — msb itself is reachable and serving. A
 // successful `msb ls` is the cheapest end-to-end signal that the supervisor
 // is up and the API can do real work. Returns 503 when msb errors so probes
 // (Caddy active health checks, systemd) treat this instance as not-ready.
-func handleReadyz(client MsbClient) http.HandlerFunc {
+// Results are cached for a short TTL (see readinessCache).
+func handleReadyz(client MsbClient, cache *readinessCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, err := client.List(r.Context()); err != nil {
+		if err := cache.ready(r.Context(), client); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}

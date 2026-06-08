@@ -54,3 +54,23 @@ func TestReadyz_NeedsNoToken(t *testing.T) {
 		t.Errorf("got %d, want 200 without auth", rec.Code)
 	}
 }
+
+// /readyz is unauthenticated so probes can hit it; a short-TTL cache collapses
+// a burst of calls into a single `msb ls`, removing the DoS-amplification
+// vector (issue #6). N rapid calls must produce exactly one List.
+func TestReadyz_CachesAcrossBurst(t *testing.T) {
+	client := &fakeMsb{}
+	srv := New(Config{Token: testToken}, client)
+
+	for i := 0; i < 10; i++ {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("call %d: got %d, want 200", i, rec.Code)
+		}
+	}
+
+	if client.listCalls != 1 {
+		t.Errorf("List invoked %d times across a burst, want 1 (cached)", client.listCalls)
+	}
+}
