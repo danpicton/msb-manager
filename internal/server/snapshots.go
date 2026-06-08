@@ -59,6 +59,16 @@ func handleCreateSnapshot(client MsbClient) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from and name are required"})
 			return
 		}
+		// Reject identifiers msb would misparse as flags (issue #3). Both `from`
+		// (source sandbox) and `name` (snapshot dest) are plain identifiers.
+		if !msb.ValidName(req.From) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid from"})
+			return
+		}
+		if !msb.ValidName(req.Name) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid name"})
+			return
+		}
 
 		if err := client.SnapshotCreate(r.Context(), req.From, req.Name, req.Labels, req.Force); err != nil {
 			writeAdapterError(w, r, "create snapshot", err)
@@ -71,6 +81,9 @@ func handleCreateSnapshot(client MsbClient) http.HandlerFunc {
 func handleDeleteSnapshot(client MsbClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if !validPathName(w, name) {
+			return
+		}
 		if err := client.SnapshotRm(r.Context(), name); err != nil {
 			writeAdapterError(w, r, "remove snapshot", err)
 			return

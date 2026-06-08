@@ -30,6 +30,9 @@ func handleListSandboxes(client MsbClient) http.HandlerFunc {
 func handleInspectSandbox(client MsbClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if !validPathName(w, name) {
+			return
+		}
 		detail, err := client.Inspect(r.Context(), name)
 		if err != nil {
 			writeAdapterError(w, r, "inspect sandbox", err)
@@ -89,6 +92,9 @@ func handleCreateSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerF
 func handleStartSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if !validPathName(w, name) {
+			return
+		}
 
 		// Look up the sandbox's volumes so we can claim them. A Start of a
 		// missing sandbox surfaces as msb.ErrSandboxNotFound -> 404.
@@ -114,6 +120,9 @@ func handleStartSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFu
 func handleStopSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if !validPathName(w, name) {
+			return
+		}
 		if err := client.Stop(r.Context(), name); err != nil {
 			writeAdapterError(w, r, "stop sandbox", err)
 			return
@@ -127,6 +136,9 @@ func handleStopSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFun
 func handleDeleteSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if !validPathName(w, name) {
+			return
+		}
 		if err := client.Rm(r.Context(), name); err != nil {
 			writeAdapterError(w, r, "remove sandbox", err)
 			return

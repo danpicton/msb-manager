@@ -237,6 +237,17 @@ func sortedKeys(m map[string]string) []string {
 // Start, Stop, Rm wrap the corresponding `msb` verbs by name. They're
 // trivially uniform; if msb ever grows per-verb flags we care about, they
 // become per-method args structs the way Create did.
+//
+// Defence-in-depth note (issue #3): the primary guard against flag injection
+// is ValidName/ValidImage/ValidSize, applied in spec.Validate() and the path
+// handlers before any name reaches here. As a belt-and-braces second layer we
+// would also pass positional identifiers after a `--` terminator (as Create
+// already does for `exec … -- install-ssh-keys`), so even an identifier that
+// slipped validation couldn't be parsed as a flag. Adding `--` to the read and
+// lifecycle verbs (rm/start/stop/inspect/metrics/logs/volume/snapshot) needs a
+// real msb to confirm each subcommand accepts the terminator without changing
+// behaviour — TODO once an msb binary is available. Not blocking: validation
+// already closes the vector for well-behaved inputs.
 func (c *Client) Start(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -97,11 +97,22 @@ func (s Spec) Validate() error {
 	if s.Name == "" {
 		return errors.New("spec: name is required")
 	}
+	// Reject identifiers msb would misparse as flags (issue #3). The check is
+	// the adapter's single source of truth for safe identifier shape.
+	if !msb.ValidName(s.Name) {
+		return fmt.Errorf("spec: name %q is not a valid identifier (alphanumeric start, [A-Za-z0-9_.-], max 128)", s.Name)
+	}
 	if s.Image == "" && s.Snapshot == "" {
 		return errors.New("spec: one of image or snapshot is required")
 	}
 	if s.Image != "" && s.Snapshot != "" {
 		return errors.New("spec: image and snapshot are mutually exclusive")
+	}
+	if s.Image != "" && !msb.ValidImage(s.Image) {
+		return fmt.Errorf("spec: image %q is not a valid reference (no leading '-', no whitespace)", s.Image)
+	}
+	if s.Snapshot != "" && !msb.ValidName(s.Snapshot) {
+		return fmt.Errorf("spec: snapshot %q is not a valid identifier", s.Snapshot)
 	}
 	if s.CPUs < 0 {
 		return fmt.Errorf("spec: cpus must be >= 0, got %d", s.CPUs)
@@ -112,6 +123,9 @@ func (s Spec) Validate() error {
 	if s.Volume != nil {
 		if s.Volume.Name == "" {
 			return errors.New("spec: volume.name is required when volume is set")
+		}
+		if !msb.ValidName(s.Volume.Name) {
+			return fmt.Errorf("spec: volume.name %q is not a valid identifier", s.Volume.Name)
 		}
 		if s.Volume.Mount == "" {
 			return errors.New("spec: volume.mount is required when volume is set")

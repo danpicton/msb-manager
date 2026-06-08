@@ -57,6 +57,15 @@ func handleCreateVolume(client MsbClient) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and size are required"})
 			return
 		}
+		// Reject identifiers/sizes msb would misparse as flags (issue #3).
+		if !msb.ValidName(req.Name) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid volume name"})
+			return
+		}
+		if !msb.ValidSize(req.Size) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid volume size"})
+			return
+		}
 
 		if err := client.VolumeCreate(r.Context(), req.Name, req.Size); err != nil {
 			writeAdapterError(w, r, "create volume", err)
@@ -69,6 +78,9 @@ func handleCreateVolume(client MsbClient) http.HandlerFunc {
 func handleDeleteVolume(client MsbClient, vlock *lock.VolumeLock) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if !validPathName(w, name) {
+			return
+		}
 		// msb itself will remove a volume out from under a running sandbox
 		// (verified msb v0.5.2). Refuse here when our lock shows it's in use.
 		if holder, ok := vlock.Holder(name); ok {
