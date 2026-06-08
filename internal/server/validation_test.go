@@ -101,6 +101,31 @@ func TestPostVolumes_MalformedNameOrSizeReturns400(t *testing.T) {
 	}
 }
 
+// A label key is emitted as `--label <key>=<val>`; a key like `--force` would
+// reach msb as a flag-shaped arg (review #4). Validate keys like any other
+// identifier before the adapter runs.
+func TestPostSnapshots_MalformedLabelKeyReturns400(t *testing.T) {
+	cases := []string{
+		`{"from":"probe","name":"snap","labels":{"--force":"v"}}`,
+		`{"from":"probe","name":"snap","labels":{"-x":"v"}}`,
+		`{"from":"probe","name":"snap","labels":{"bad key":"v"}}`,
+	}
+	for _, body := range cases {
+		client := &fakeMsb{}
+		srv := New(Config{Token: testToken}, client)
+
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/snapshots", body))
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status = %d, want 400", body, rec.Code)
+		}
+		if client.gotSnapshotCreate.From != "" {
+			t.Errorf("body %s: SnapshotCreate invoked despite malformed label key", body)
+		}
+	}
+}
+
 func TestPostSnapshots_MalformedFromOrNameReturns400(t *testing.T) {
 	cases := []string{
 		`{"from":"--force","name":"snap"}`,

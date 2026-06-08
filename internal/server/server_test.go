@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestHealthzReturns200(t *testing.T) {
@@ -72,5 +74,33 @@ func TestReadyz_CachesAcrossBurst(t *testing.T) {
 
 	if client.listCalls != 1 {
 		t.Errorf("List invoked %d times across a burst, want 1 (cached)", client.listCalls)
+	}
+}
+
+// A canceled request context (client disconnect) must NOT poison the cache:
+// otherwise every /readyz caller would see 503 for the whole TTL even though
+// msb is healthy (review #2). A genuine error is still cached.
+func TestReadinessCache_DoesNotCacheCanceledContext(t *testing.T) {
+	rc := &readinessCache{ttl: time.Minute}
+	client := &fakeMsb{listErr: context.Canceled}
+
+	if err := rc.ready(context.Background(), client); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ready: got %v, want context.Canceled", err)
+	}
+	// Second call must re-run List (the canceled error was not cached).
+	_ = rc.ready(context.Background(), client)
+	if client.listCalls != 2 {
+		t.Errorf("List called %d times, want 2 (canceled error must not be cached)", client.listCalls)
+	}
+}
+
+func TestReadinessCache_CachesGenuineError(t *testing.T) {
+	rc := &readinessCache{ttl: time.Minute}
+	client := &fakeMsb{listErr: errors.New("msb is down")}
+
+	_ = rc.ready(context.Background(), client)
+	_ = rc.ready(context.Background(), client)
+	if client.listCalls != 1 {
+		t.Errorf("List called %d times, want 1 (genuine error should cache)", client.listCalls)
 	}
 }

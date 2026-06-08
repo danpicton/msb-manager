@@ -163,6 +163,57 @@ func TestClientCreate_SSHKeyInstallFailureRollsBack(t *testing.T) {
 	}
 }
 
+// The SSH-key rollback must run even when the caller's context is already
+// cancelled (client disconnected mid-exec), or the "atomic create" promise
+// breaks and a sandbox is orphaned (review #3). This runner records, per call,
+// the ctx error it observed, so we can prove the rollback ran with a detached
+// (non-cancelled) context.
+func TestClientCreate_RollbackDetachesFromCancelledContext(t *testing.T) {
+	r := &ctxRecordingRunner{
+		// create succeeds; exec install fails; rm rollback succeeds.
+		errs: []error{nil, errors.New("exit status 1"), nil},
+	}
+	c := NewClient("msb", r)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // caller already gone before Create returns
+
+	err := c.Create(ctx, CreateOpts{Name: "x", Image: "alpine", SSHKeys: []string{"ssh-ed25519 AAAA"}})
+	if err == nil {
+		t.Fatal("Create: got nil, want install-failure error")
+	}
+	if len(r.calls) != 3 {
+		t.Fatalf("got %d calls, want 3 (create, exec, rm); calls=%v", len(r.calls), r.calls)
+	}
+	if want := []string{"rm", "-f", "--", "x"}; !reflect.DeepEqual(r.calls[2], want) {
+		t.Errorf("rollback call = %v, want %v", r.calls[2], want)
+	}
+	// The rollback (3rd call) must see a live context, not the cancelled parent.
+	if r.ctxErrs[2] != nil {
+		t.Errorf("rollback ran with ctx.Err()=%v, want nil (detached from cancelled parent)", r.ctxErrs[2])
+	}
+}
+
+// ctxRecordingRunner records each call's args and the ctx error observed when
+// it was invoked.
+type ctxRecordingRunner struct {
+	calls   [][]string
+	ctxErrs []error
+	errs    []error
+	idx     int
+}
+
+func (r *ctxRecordingRunner) Run(ctx context.Context, _ string, args ...string) ([]byte, []byte, error) {
+	r.calls = append(r.calls, append([]string(nil), args...))
+	r.ctxErrs = append(r.ctxErrs, ctx.Err())
+	var err error
+	if r.idx < len(r.errs) {
+		err = r.errs[r.idx]
+	}
+	r.idx++
+	return nil, nil, err
+}
+
 type recordingRunner struct {
 	calls *[][]string
 	errs  []error // optional: per-call exit errors

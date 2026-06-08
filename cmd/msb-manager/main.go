@@ -43,9 +43,10 @@ const (
 	idleTimeout = 60 * time.Second
 
 	// msbCmdTimeoutCeiling is the upper bound any per-invocation msb command
-	// timeout (issue #4) may be configured to. writeTimeout is kept above it so
-	// a timed-out command can always surface its error to the client.
-	msbCmdTimeoutCeiling = 90 * time.Second
+	// timeout (issue #4) may be configured to — enforced at config load via
+	// config.MaxCmdTimeout. writeTimeout is kept strictly above it so a
+	// timed-out command can always surface its error to the client.
+	msbCmdTimeoutCeiling = config.MaxCmdTimeout
 )
 
 // newHTTPServer builds the control-plane HTTP server with conservative

@@ -1,6 +1,9 @@
 package msb
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidName(t *testing.T) {
 	cases := []struct {
@@ -34,9 +37,9 @@ func TestValidName(t *testing.T) {
 		{"a\nb", false},
 		{"a\x00b", false},
 		// Invalid: too long (> 128 chars).
-		{string(make([]byte, 0)) + repeat("a", 129), false},
+		{strings.Repeat("a", 129), false},
 		// Valid: exactly 128 chars.
-		{repeat("a", 128), true},
+		{strings.Repeat("a", 128), true},
 	}
 	for _, tc := range cases {
 		if got := ValidName(tc.in); got != tc.want {
@@ -98,14 +101,4 @@ func TestValidSize(t *testing.T) {
 			t.Errorf("ValidSize(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
-}
-
-// repeat is a tiny strings.Repeat stand-in kept local so the test file stays
-// dependency-light.
-func repeat(s string, n int) string {
-	out := make([]byte, 0, len(s)*n)
-	for i := 0; i < n; i++ {
-		out = append(out, s...)
-	}
-	return string(out)
 }

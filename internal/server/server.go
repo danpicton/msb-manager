@@ -6,6 +6,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -96,24 +97,30 @@ const readinessTTL = 2 * time.Second
 type readinessCache struct {
 	ttl       time.Duration
 	mu        sync.Mutex
-	checkedAt time.Time
+	checkedAt time.Time // zero value = never checked (cache cold)
 	err       error
-	valid     bool
 }
 
 // ready returns the cached readiness result if it's within the TTL, otherwise
 // runs a fresh `msb ls`. The lock is held across the List call so a concurrent
-// burst produces a single subprocess (the rest wait, then read the cache).
+// burst produces a single subprocess (the rest wait, then read the cache). The
+// zero value of checkedAt reads as "infinitely old", so a cold cache always
+// misses without a separate flag.
 func (rc *readinessCache) ready(ctx context.Context, client MsbClient) error {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
-	if rc.valid && time.Since(rc.checkedAt) < rc.ttl {
+	if time.Since(rc.checkedAt) < rc.ttl {
 		return rc.err
 	}
 	_, err := client.List(ctx)
+	// A canceled context is the caller disconnecting, not msb failing — don't
+	// poison the cache with it (review #2), or every probe in the next TTL
+	// window would see a spurious 503 while msb is actually healthy.
+	if errors.Is(err, context.Canceled) {
+		return err
+	}
 	rc.checkedAt = time.Now()
 	rc.err = err
-	rc.valid = true
 	return err
 }
 

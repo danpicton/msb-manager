@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -179,7 +180,16 @@ func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 		// as the command rather than as another flag.
 		_, stderr, err := c.run(ctx, "exec", opts.Name, "--", sshKeyScriptName)
 		if err != nil {
-			_, _, _ = c.run(ctx, "rm", "-f", "--", opts.Name)
+			// Roll back with a cancellation-independent context (review #3): if
+			// the client disconnected during exec, ctx is already cancelled and
+			// a ctx-bound cleanup would never start, orphaning the sandbox the
+			// caller was promised was "all or nothing". Detach, but still bound
+			// it via c.run's own timeout, and log (don't silently drop) a failed
+			// rollback so an orphan is at least visible.
+			if _, rbStderr, rbErr := c.run(context.WithoutCancel(ctx), "rm", "-f", "--", opts.Name); rbErr != nil {
+				slog.WarnContext(ctx, "ssh-key rollback failed; sandbox may be orphaned",
+					"sandbox", opts.Name, "err", wrapRunErr(rbStderr, rbErr).Error())
+			}
 			return fmt.Errorf("install ssh keys after create: %w", wrapRunErr(stderr, err))
 		}
 	}

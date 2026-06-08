@@ -69,6 +69,16 @@ func handleCreateSnapshot(client MsbClient) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid name"})
 			return
 		}
+		// Label keys are emitted as `--label <key>=<val>`; a key like `--force`
+		// would reach msb as a flag-shaped arg (review #4). Values are glued
+		// after `<key>=` into a single arg so can't become a flag — only keys
+		// need the identifier check.
+		for k := range req.Labels {
+			if !msb.ValidName(k) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid label key"})
+				return
+			}
+		}
 
 		if err := client.SnapshotCreate(r.Context(), req.From, req.Name, req.Labels, req.Force); err != nil {
 			writeAdapterError(w, r, "create snapshot", err)

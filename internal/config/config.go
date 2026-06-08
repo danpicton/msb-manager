@@ -46,6 +46,11 @@ const (
 	// server's WriteTimeout (cmd/msb-manager) so a timed-out call can still
 	// write its 504.
 	DefaultCmdTimeout = 60 * time.Second
+	// MaxCmdTimeout caps MSB_MANAGER_CMD_TIMEOUT. The HTTP server's WriteTimeout
+	// (cmd/msb-manager) is held strictly above this, so a timed-out msb call can
+	// always surface its 504 before the connection is torn down. Enforced at
+	// load (review #1) rather than left as a documented-but-unchecked invariant.
+	MaxCmdTimeout = 90 * time.Second
 )
 
 // Load resolves configuration from getenv (injected so tests don't touch real
@@ -69,8 +74,10 @@ func Load(getenv func(string) string) (Config, error) {
 }
 
 // parseTimeout resolves MSB_MANAGER_CMD_TIMEOUT: empty falls back to the
-// default; otherwise it must be a positive Go duration (e.g. "60s", "2m"). A
-// zero or negative value is rejected rather than silently disabling the bound.
+// default; otherwise it must be a positive Go duration (e.g. "60s", "2m") no
+// greater than MaxCmdTimeout. A zero/negative value is rejected rather than
+// silently disabling the bound; a value above the cap is rejected so it can
+// never exceed the HTTP WriteTimeout (review #1).
 func parseTimeout(v string) (time.Duration, error) {
 	if v == "" {
 		return DefaultCmdTimeout, nil
@@ -81,6 +88,9 @@ func parseTimeout(v string) (time.Duration, error) {
 	}
 	if d <= 0 {
 		return 0, fmt.Errorf("config: MSB_MANAGER_CMD_TIMEOUT must be positive, got %s", d)
+	}
+	if d > MaxCmdTimeout {
+		return 0, fmt.Errorf("config: MSB_MANAGER_CMD_TIMEOUT must be <= %s, got %s", MaxCmdTimeout, d)
 	}
 	return d, nil
 }
