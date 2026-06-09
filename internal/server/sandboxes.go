@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"msb-manager/internal/api"
 	"msb-manager/internal/lock"
 	"msb-manager/internal/msb"
 	"msb-manager/internal/spec"
@@ -19,11 +20,9 @@ func handleListSandboxes(client MsbClient) http.HandlerFunc {
 			writeAdapterError(w, r, "list sandboxes", err)
 			return
 		}
-		// Non-nil empty slice serialises as [] not null.
-		if sandboxes == nil {
-			sandboxes = []msb.Sandbox{}
-		}
-		writeJSON(w, http.StatusOK, sandboxes)
+		// Map adapter types onto the public DTO before the wire (ADR-0006).
+		// NewSandboxSummaries returns a non-nil slice so empty serialises as [].
+		writeJSON(w, http.StatusOK, api.NewSandboxSummaries(sandboxes))
 	}
 }
 
@@ -38,7 +37,7 @@ func handleInspectSandbox(client MsbClient) http.HandlerFunc {
 			writeAdapterError(w, r, "inspect sandbox", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, detail)
+		writeJSON(w, http.StatusOK, api.NewSandboxDetail(detail))
 	}
 }
 

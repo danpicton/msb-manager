@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"msb-manager/internal/api"
 	"msb-manager/internal/msb"
 )
 
@@ -58,6 +59,6 @@ func handleMetrics(client MsbClient) http.HandlerFunc {
 			writeAdapterError(w, r, "read metrics", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, m)
+		writeJSON(w, http.StatusOK, api.NewMetrics(m))
 	}
 }
