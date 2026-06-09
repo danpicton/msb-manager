@@ -26,3 +26,6 @@ credentials
 # Local Claude state
 .claude/
 msb-manager
+
+# Handoff brief — local working note, not version controlled
+HANDOFF.md

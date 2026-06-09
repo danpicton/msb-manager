@@ -30,13 +30,18 @@ The logical unit of persistent work, **not** a host folder (we dropped host-side
 _Concurrency_: exactly one *running* sandbox may mount a given volume at a time, enforced by msb-manager (a server-owned lock keyed by volume name, reconciled against `msb ls`).
 
 **Spec**:
-A declarative description of a sandbox to create — image-or-snapshot, memory, CPUs, volume, env, secrets, SSH public keys, setup script, network policy. Authored client-side (YAML, compose-style) and submitted to the create endpoint, which accepts YAML or JSON. **The spec is the project's durable definition and lives with the client** (e.g. a specs repo), since the server is stateless.
+A declarative description of **a single sandbox** to create — image-or-snapshot, memory, CPUs, volume, env, secrets, SSH public keys, setup script, network policy. Authored client-side as YAML (or JSON) and submitted to the create endpoint; the server owns the schema and validates it (kubectl model, ADR-0005), so the client is a thin transport. One spec maps 1:1 to one sandbox — it is **not** a multi-resource orchestration file (no service graph, no fan-out). **The spec is the project's durable definition and lives with the client** (e.g. a specs repo), since the server is stateless.
+_Avoid_: "compose-style" (implies multi-resource orchestration we don't do — a spec is single-sandbox, kubectl-style).
 
 **Derived sandbox**:
 A sandbox booted from a snapshot. On creation a flag chooses its volume: **new volume** (a fresh project off a base) or **reuse the ancestor's volume** (the snapshot→recreate-in-place case).
 
 **Connection info**:
 The address and published guest ports of a running sandbox, surfaced by the control plane so external tooling can reach the data plane directly. msb-manager reports it; it does not route it.
+
+**msbctl**:
+The remote command-line client for msb-manager — a thin, **opaque** HTTP client that owns no schema (the server validates). It streams a spec to create and pretty-prints JSON responses for reads. Lives in-repo (`cmd/msbctl`) but imports nothing under `internal/` (ADR-0007).
+_Avoid_: "agent", "SDK" (it is neither — it wraps the HTTP API, not the `msb` CLI).
 
 **Trust domain**:
 v1 is a **single trust domain** — any valid bearer token has full access to every sandbox. Per-sandbox authorization is deferred past v1.
@@ -47,7 +52,10 @@ v1 is a **single trust domain** — any valid bearer token has full access to ev
 - **Stateless server, client is source of truth.** No database. `msb ls --format json` is the source of truth for "what exists"; the client holds project specs/secrets. msb-manager shells out to the `msb` CLI (not the SDK).
 - **Ops-endpoint auth boundary.** `/healthz` (shallow, cheap) and `/readyz` are the only unauthenticated endpoints; everything else is behind the bearer token. `/readyz` runs `msb ls` to prove the supervisor is up, so its result is cached for a short TTL (`readinessTTL`, 2s) to stop an unauthenticated caller driving unbounded — and potentially hanging — subprocesses (issue #6). Caching was chosen over requiring auth so the probe contract stays simple and Caddy/systemd need no token plumbing.
 - **Persistence via named microsandbox volumes**, not host-side folders. Everything is driven remotely over the API — the operator never touches the host filesystem.
-- **Create accepts a declarative spec** (YAML or JSON), compose-style; a thin client CLI may offer flag-based convenience on top of the same spec.
+- **Create accepts a declarative spec** (YAML or JSON), single-sandbox, **server-owned schema** (kubectl model, ADR-0005): the server parses and authoritatively validates because it shells out to `msb`. A thin client CLI streams a spec file or builds the object from flags, but never owns the schema. A future multi-sandbox "project file" is a client-only fan-out, never server-side.
+- **Remote client `msbctl` is in-repo, opaque, HTTP-only** (ADR-0007): a thin transport with no shared schema and no `internal/` imports. Target/auth via a precedence chain (flags > env > config-file profiles > defaults); the bearer token is preferred via env or a `0600` config file, not argv.
+- **Response DTOs are a deliberate contract** (ADR-0006): handlers map `internal/msb` adapter types onto an `internal/api` package rather than serialising adapter structs directly, so an adapter refactor can't silently reshape the public API. Symmetric to the inbound `spec.Spec → msb.CreateOpts` seam.
+- **Client-held secrets via interpolation** (ADR-0008): specs carry `${VAR}` placeholders; `msbctl` does value-safe textual `envsubst` over the raw bytes (from environment or per-run flags) before POSTing, so secret values never sit in the committed spec and the client stays opaque.
 - **Credentials applied per-create, kept out of snapshots.** Egress tokens via `--secret KEY=VAL@host`; SSH public keys installed into the guest at create; private/file secrets mounted, not baked.
 - **Concurrency:** one running sandbox per volume, enforced by a server-owned lock reconciled against `msb ls`.
 - **Core surface:** `list / inspect / create / start / stop / rm / exec / logs / metrics` for sandboxes; `snapshot ls / create / inspect / rm` as pass-throughs; `volume` create/ls/rm.
