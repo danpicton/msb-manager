@@ -16,16 +16,17 @@ import (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv))
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, os.Getenv))
 }
 
 // runEnv bundles everything a subcommand needs: the HTTP client, the resolved
 // target, an injected environment lookup (for create's interpolation), and the
-// output streams. Passing it in keeps subcommands testable without globals.
+// input/output streams. Passing it in keeps subcommands testable without globals.
 type runEnv struct {
 	client *client
 	target target
 	getenv func(string) string
+	stdin  io.Reader
 	stdout io.Writer
 	stderr io.Writer
 }
@@ -45,13 +46,13 @@ func registerCommand(c *command) { commands[c.name] = c }
 
 // run is the testable entry point: it takes argv (without the program name),
 // the output streams, and an environment lookup, and returns an exit code.
-func run(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	var flags cliFlags
 	gf := flag.NewFlagSet("msbctl", flag.ContinueOnError)
 	gf.SetOutput(stderr)
 	gf.StringVar(&flags.server, "server", "", "msb-manager base URL (overrides env and config)")
 	gf.StringVar(&flags.profile, "profile", "", "config-file profile to use")
-	gf.StringVar(&flags.token, "token", "", "bearer token (LAST RESORT: visible in `ps`/proc; prefer MSB_MANAGER_TOKEN or the config file)")
+	gf.StringVar(&flags.token, "token", "", "bearer token (LAST RESORT: visible in process args; prefer MSB_MANAGER_TOKEN or the config file)")
 	gf.Usage = func() { printUsage(stderr, gf) }
 
 	if err := gf.Parse(args); err != nil {
@@ -94,6 +95,7 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		client: newClient(tgt),
 		target: tgt,
 		getenv: getenv,
+		stdin:  stdin,
 		stdout: stdout,
 		stderr: stderr,
 	}

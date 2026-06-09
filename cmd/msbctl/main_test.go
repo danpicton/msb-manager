@@ -8,7 +8,7 @@ import (
 
 func TestRun_HelpMentionsTokenArgvCaveat(t *testing.T) {
 	var out, errOut bytes.Buffer
-	code := run([]string{"help"}, &out, &errOut, noEnv)
+	code := run([]string{"help"}, nil, &out, &errOut, noEnv)
 	if code != exitOK {
 		t.Fatalf("help exit = %d, want %d", code, exitOK)
 	}
@@ -25,7 +25,7 @@ func TestRun_HelpMentionsTokenArgvCaveat(t *testing.T) {
 
 func TestRun_UnknownCommandIsGenericError(t *testing.T) {
 	var out, errOut bytes.Buffer
-	code := run([]string{"frobnicate"}, &out, &errOut, noEnv)
+	code := run([]string{"frobnicate"}, nil, &out, &errOut, noEnv)
 	if code != exitGeneric {
 		t.Fatalf("exit = %d, want %d", code, exitGeneric)
 	}
@@ -36,7 +36,7 @@ func TestRun_UnknownCommandIsGenericError(t *testing.T) {
 
 func TestRun_NoArgsShowsUsage(t *testing.T) {
 	var out, errOut bytes.Buffer
-	code := run(nil, &out, &errOut, noEnv)
+	code := run(nil, nil, &out, &errOut, noEnv)
 	if code != exitGeneric {
 		t.Fatalf("exit = %d, want %d", code, exitGeneric)
 	}
