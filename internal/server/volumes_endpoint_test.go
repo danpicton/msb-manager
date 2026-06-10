@@ -87,9 +87,9 @@ func TestPostVolumes_BatchWithMismatch_Returns207(t *testing.T) {
 
 func TestPostVolumes_PreflightFailureMakesZeroMsbCalls(t *testing.T) {
 	cases := []string{
-		`{"volumes":[]}`,                                       // empty list
-		`{"volumes":[{"name":"--force","size":"1G"}]}`,        // flag-shaped name
-		`{"volumes":[{"name":"ok","size":"-1G"}]}`,            // bad size
+		`{"volumes":[]}`, // empty list
+		`{"volumes":[{"name":"--force","size":"1G"}]}`,          // flag-shaped name
+		`{"volumes":[{"name":"ok","size":"-1G"}]}`,              // bad size
 		`{"volumes":[{"name":"ok","size":"1G"},{"size":"2G"}]}`, // second item missing name
 	}
 	for _, body := range cases {

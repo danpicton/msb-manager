@@ -17,9 +17,9 @@ func TestPlanVolumeBatch(t *testing.T) {
 	}
 
 	cases := []struct {
-		name       string
-		req        []volumeRequest
-		want       []api.VolumeResult
+		name string
+		req  []volumeRequest
+		want []api.VolumeResult
 	}{
 		{
 			name: "absent volume is created",
