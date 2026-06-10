@@ -7,6 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"msb-manager/internal/api"
 	"msb-manager/internal/msb"
 )
 
@@ -29,10 +30,7 @@ func handleListSnapshots(client MsbClient) http.HandlerFunc {
 			writeAdapterError(w, r, "list snapshots", err)
 			return
 		}
-		if snapshots == nil {
-			snapshots = []msb.Snapshot{}
-		}
-		writeJSON(w, http.StatusOK, snapshots)
+		writeJSON(w, http.StatusOK, api.NewSnapshots(snapshots))
 	}
 }
 

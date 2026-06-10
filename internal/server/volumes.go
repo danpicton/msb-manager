@@ -8,6 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"msb-manager/internal/api"
 	"msb-manager/internal/lock"
 	"msb-manager/internal/msb"
 )
@@ -19,10 +20,7 @@ func handleListVolumes(client MsbClient) http.HandlerFunc {
 			writeAdapterError(w, r, "list volumes", err)
 			return
 		}
-		if volumes == nil {
-			volumes = []msb.Volume{}
-		}
-		writeJSON(w, http.StatusOK, volumes)
+		writeJSON(w, http.StatusOK, api.NewVolumes(volumes))
 	}
 }
 
