@@ -73,6 +73,43 @@ func handleCreateVolume(client MsbClient) http.HandlerFunc {
 	}
 }
 
+// planVolumeBatch decides, per requested volume, what to do given the volumes
+// that already exist (name -> quota in MiB, from `msb volume ls`). It performs
+// NO subprocess calls — it is the pure reconcile seam (ADR-0003: msb is the
+// source of truth, passed in as `existing`). The handler then executes only the
+// `created` entries.
+//
+//   - absent                -> created
+//   - present, size matches -> exists
+//   - present, size differs -> error (msb can't shrink/grow; a mismatch is hard)
+//
+// "Same size" is a unit-normalised comparison via msb.ParseSizeMiB (1G == 1024M),
+// never string equality.
+func planVolumeBatch(req []volumeRequest, existing map[string]int) []api.VolumeResult {
+	out := make([]api.VolumeResult, 0, len(req))
+	for _, v := range req {
+		res := api.VolumeResult{Name: v.Name, Size: v.Size}
+		wantMiB, err := msb.ParseSizeMiB(v.Size)
+		if err != nil {
+			res.Status = api.VolumeStatusError
+			res.Error = err.Error()
+			out = append(out, res)
+			continue
+		}
+		switch haveMiB, ok := existing[v.Name]; {
+		case !ok:
+			res.Status = api.VolumeStatusCreated
+		case haveMiB == wantMiB:
+			res.Status = api.VolumeStatusExists
+		default:
+			res.Status = api.VolumeStatusError
+			res.Error = fmt.Sprintf("exists at %dMiB, cannot resize to %dMiB", haveMiB, wantMiB)
+		}
+		out = append(out, res)
+	}
+	return out
+}
+
 func handleDeleteVolume(client MsbClient, vlock *lock.VolumeLock) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
