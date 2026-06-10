@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,12 +25,56 @@ func handleListVolumes(client MsbClient) http.HandlerFunc {
 	}
 }
 
-// volumeRequest is the create-volume body. Two fields, two units of work — no
-// need for a dedicated package yet; if other endpoints grow similar shapes
-// they can graduate to internal/spec.
+// volumeRequest is one volume to provision: the single-create body and, reused,
+// each item of a batch manifest. Two fields, two units of work — no need for a
+// dedicated package yet; if other endpoints grow similar shapes they can
+// graduate to internal/spec.
 type volumeRequest struct {
 	Name string `yaml:"name" json:"name"`
 	Size string `yaml:"size" json:"size"`
+}
+
+// volumeManifest is the declarative batch-create body (POST /volumes with
+// {volumes:[...]}). It mirrors internal/spec's Parse + Validate pattern:
+// parseVolumeManifest decodes (rejecting unknown fields), validate() enforces
+// the required-field and identifier invariants pre-flight. Validation is
+// side-effect-free so a malformed batch is a 400 before any msb call runs.
+type volumeManifest struct {
+	Volumes []volumeRequest `yaml:"volumes" json:"volumes"`
+}
+
+// parseVolumeManifest decodes a YAML (or JSON) batch body. Unknown fields are
+// rejected so a typo surfaces as an error rather than a silent drop, matching
+// spec.Parse.
+func parseVolumeManifest(data []byte) (volumeManifest, error) {
+	var m volumeManifest
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&m); err != nil {
+		return volumeManifest{}, fmt.Errorf("parse volume manifest: %w", err)
+	}
+	return m, nil
+}
+
+// validate checks the batch is non-empty and every item is well-formed. It
+// makes no msb calls; a typo never half-applies (pre-flight is atomic).
+func (m volumeManifest) validate() error {
+	if len(m.Volumes) == 0 {
+		return errors.New("volumes list is empty or missing")
+	}
+	for i, v := range m.Volumes {
+		if v.Name == "" || v.Size == "" {
+			return fmt.Errorf("volumes[%d]: name and size are required", i)
+		}
+		// Reject identifiers/sizes msb would misparse as flags (issue #3).
+		if !msb.ValidName(v.Name) {
+			return fmt.Errorf("volumes[%d]: invalid volume name %q", i, v.Name)
+		}
+		if !msb.ValidSize(v.Size) {
+			return fmt.Errorf("volumes[%d]: invalid volume size %q", i, v.Size)
+		}
+	}
+	return nil
 }
 
 func handleCreateVolume(client MsbClient) http.HandlerFunc {
