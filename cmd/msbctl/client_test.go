@@ -62,6 +62,7 @@ func TestExitCodeForStatus(t *testing.T) {
 		200: exitOK,
 		201: exitOK,
 		204: exitOK,
+		207: exitPartial,
 		400: exitClientError,
 		404: exitClientError,
 		409: exitClientError,
