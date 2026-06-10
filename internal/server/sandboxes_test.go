@@ -49,7 +49,10 @@ type fakeMsb struct {
 	gotStartName       string
 	gotStopName        string
 	gotRmName          string
-	gotVolumeCreate    [2]string // name, size
+	gotVolumeCreate    [2]string // name, size (last call)
+	volumeCreateCalls  int
+	volumeCreateNames  []string
+	volumeListCalls    int
 	gotVolumeRm        string
 	gotSnapshotCreate  snapshotCall
 	gotSnapshotRm      string
@@ -94,10 +97,13 @@ func (f *fakeMsb) Metrics(_ context.Context, name string) (msb.Metrics, error) {
 	return f.metricsOut, f.metricsErr
 }
 func (f *fakeMsb) VolumeList(_ context.Context) ([]msb.Volume, error) {
+	f.volumeListCalls++
 	return f.volumeListOut, f.volumeListErr
 }
 func (f *fakeMsb) VolumeCreate(_ context.Context, name, size string) error {
 	f.gotVolumeCreate = [2]string{name, size}
+	f.volumeCreateCalls++
+	f.volumeCreateNames = append(f.volumeCreateNames, name)
 	return f.volumeCreateErr
 }
 func (f *fakeMsb) VolumeRm(_ context.Context, name string) error {

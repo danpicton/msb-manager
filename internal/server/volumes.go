@@ -89,6 +89,24 @@ func handleCreateVolume(client MsbClient) http.HandlerFunc {
 			return
 		}
 
+		// Branch on the presence of a `volumes` key. A tolerant probe (no
+		// KnownFields) distinguishes the two shapes; each branch then re-decodes
+		// strictly so unknown fields are rejected in whichever shape applies. A
+		// non-nil pointer means the key was present even when the list is empty,
+		// so {"volumes":[]} routes to the batch path (and its 400) rather than
+		// being mistaken for a single create.
+		var probe struct {
+			Volumes *[]volumeRequest `yaml:"volumes"`
+		}
+		if err := yaml.Unmarshal(body, &probe); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if probe.Volumes != nil {
+			handleCreateVolumeBatch(w, r, client, body)
+			return
+		}
+
 		var req volumeRequest
 		dec := yaml.NewDecoder(bytes.NewReader(body))
 		dec.KnownFields(true)
@@ -116,6 +134,58 @@ func handleCreateVolume(client MsbClient) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name, "size": req.Size})
 	}
+}
+
+// handleCreateVolumeBatch serves the declarative batch shape. Two phases,
+// deliberately separated (ADR-0009): pre-flight validate-all (atomic 400, zero
+// msb calls), then best-effort per-item execution where only `created` items
+// shell out to msb.VolumeCreate. 201 when every item is created/exists, 207 when
+// any item is an error.
+func handleCreateVolumeBatch(w http.ResponseWriter, r *http.Request, client MsbClient, body []byte) {
+	manifest, err := parseVolumeManifest(body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := manifest.validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// msb is the source of truth for what exists and at what size (ADR-0003);
+	// look it up once and reconcile against it.
+	volumes, err := client.VolumeList(r.Context())
+	if err != nil {
+		writeAdapterError(w, r, "list volumes", err)
+		return
+	}
+	existing := make(map[string]int, len(volumes))
+	for _, v := range volumes {
+		existing[v.Name] = v.QuotaMiB
+	}
+
+	results := planVolumeBatch(manifest.Volumes, existing)
+	for i := range results {
+		if results[i].Status != api.VolumeStatusCreated {
+			continue
+		}
+		if err := client.VolumeCreate(r.Context(), results[i].Name, results[i].Size); err != nil {
+			// Reuse the adapter-error classifier for a safe message — never raw
+			// msb stderr, which could leak (mirrors writeAdapterError).
+			_, msg := statusForAdapterError("create volume", err)
+			results[i].Status = api.VolumeStatusError
+			results[i].Error = msg
+		}
+	}
+
+	status := http.StatusCreated
+	for _, res := range results {
+		if res.Status == api.VolumeStatusError {
+			status = http.StatusMultiStatus
+			break
+		}
+	}
+	writeJSON(w, status, api.VolumeBatchResponse{Results: results})
 }
 
 // planVolumeBatch decides, per requested volume, what to do given the volumes
