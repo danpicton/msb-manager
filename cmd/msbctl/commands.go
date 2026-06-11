@@ -88,6 +88,30 @@ func (env *runEnv) doAction(ctx context.Context, method, path string, body io.Re
 	return exitOK
 }
 
+// doStatusAction performs a mutating call that always returns a body to render
+// and derives the exit code from the HTTP status (via exitCodeForStatus) rather
+// than collapsing every 2xx to success. That is what lets a 207 Multi-Status
+// render its results body and still exit non-zero. The body is passed through
+// opaquely — msbctl owns no response schema (ADR-0007).
+func (env *runEnv) doStatusAction(ctx context.Context, method, path string, body io.Reader, contentType string) int {
+	if code := env.ensureToken(); code != exitOK {
+		return code
+	}
+	resp, err := env.client.do(ctx, method, path, body, contentType)
+	if err != nil {
+		fmt.Fprintf(env.stderr, "error: %v\n", err)
+		return exitGeneric
+	}
+	if resp.status >= 400 {
+		renderServerError(env.stderr, resp.status, resp.body)
+		return exitCodeForStatus(resp.status)
+	}
+	if trimmed := bytes.TrimSpace(resp.body); len(trimmed) > 0 {
+		_ = writeJSONOut(env.stdout, trimmed)
+	}
+	return exitCodeForStatus(resp.status)
+}
+
 // parseFlags parses a per-command flag set, returning the positional arguments.
 // It allows flags and positionals to be interspersed (e.g. `logs web --tail 5`
 // as well as `logs --tail 5 web`), which the stdlib flag package does not do on
@@ -321,17 +345,31 @@ func cmdVolume(ctx context.Context, env *runEnv, args []string) int {
 		return env.doRead(ctx, "/volumes", *format, []string{"name", "quota_mib", "used_bytes", "created_at"})
 	case "create":
 		fs := flag.NewFlagSet("volume create", flag.ContinueOnError)
-		size := fs.String("size", "", "volume size, e.g. 10G (required)")
+		size := fs.String("size", "", "volume size, e.g. 10G (single-shot create)")
+		manifest := fs.String("f", "", "manifest file of volumes to batch-create (- for stdin)")
 		pos, ok := env.parseFlags(fs, rest)
 		if !ok {
 			return exitGeneric
 		}
+		// Declarative batch: POST the manifest as-is and render the per-item
+		// results. Exits non-zero on 207 via exitCodeForStatus — the handling is
+		// generic, so msbctl learns nothing volume-specific (ADR-0007).
+		if *manifest != "" {
+			raw, err := env.readSpec(*manifest)
+			if err != nil {
+				fmt.Fprintf(env.stderr, "error: %v\n", err)
+				return exitGeneric
+			}
+			return env.doStatusAction(ctx, http.MethodPost, "/volumes",
+				bytes.NewReader(raw), "application/yaml")
+		}
+		// Single-shot create (unchanged): name + --size.
 		name, ok := oneName(env, pos, "volume")
 		if !ok {
 			return exitGeneric
 		}
 		if *size == "" {
-			fmt.Fprintln(env.stderr, "error: volume create requires --size")
+			fmt.Fprintln(env.stderr, "error: volume create requires --size (or -f <manifest> for a batch)")
 			return exitGeneric
 		}
 		body := volumeCreateBody(name, *size)

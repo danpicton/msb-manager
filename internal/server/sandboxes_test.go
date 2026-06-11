@@ -23,18 +23,18 @@ func newWithLock(cfg Config, client MsbClient, vlock *lock.VolumeLock) http.Hand
 // canned data/error and records its arguments so tests can assert what the
 // handler forwarded.
 type fakeMsb struct {
-	listOut          []msb.Sandbox
-	listErr          error
-	inspectOut       msb.SandboxDetail
-	inspectErr       error
-	createErr        error
-	startErr         error
-	stopErr          error
-	rmErr            error
-	volumeListOut    []msb.Volume
-	volumeListErr    error
-	volumeCreateErr  error
-	volumeRmErr      error
+	listOut           []msb.Sandbox
+	listErr           error
+	inspectOut        msb.SandboxDetail
+	inspectErr        error
+	createErr         error
+	startErr          error
+	stopErr           error
+	rmErr             error
+	volumeListOut     []msb.Volume
+	volumeListErr     error
+	volumeCreateErr   error
+	volumeRmErr       error
 	snapshotListOut   []msb.Snapshot
 	snapshotListErr   error
 	snapshotCreateErr error
@@ -44,18 +44,21 @@ type fakeMsb struct {
 	metricsOut        msb.Metrics
 	metricsErr        error
 
-	gotInspectName     string
-	gotCreateOpts      msb.CreateOpts
-	gotStartName       string
-	gotStopName        string
-	gotRmName          string
-	gotVolumeCreate    [2]string // name, size
-	gotVolumeRm        string
-	gotSnapshotCreate  snapshotCall
-	gotSnapshotRm      string
-	gotLogsName        string
-	gotLogsOpts        msb.LogsOpts
-	gotMetricsName     string
+	gotInspectName    string
+	gotCreateOpts     msb.CreateOpts
+	gotStartName      string
+	gotStopName       string
+	gotRmName         string
+	gotVolumeCreate   [2]string // name, size (last call)
+	volumeCreateCalls int
+	volumeCreateNames []string
+	volumeListCalls   int
+	gotVolumeRm       string
+	gotSnapshotCreate snapshotCall
+	gotSnapshotRm     string
+	gotLogsName       string
+	gotLogsOpts       msb.LogsOpts
+	gotMetricsName    string
 
 	listCalls int
 }
@@ -94,10 +97,13 @@ func (f *fakeMsb) Metrics(_ context.Context, name string) (msb.Metrics, error) {
 	return f.metricsOut, f.metricsErr
 }
 func (f *fakeMsb) VolumeList(_ context.Context) ([]msb.Volume, error) {
+	f.volumeListCalls++
 	return f.volumeListOut, f.volumeListErr
 }
 func (f *fakeMsb) VolumeCreate(_ context.Context, name, size string) error {
 	f.gotVolumeCreate = [2]string{name, size}
+	f.volumeCreateCalls++
+	f.volumeCreateNames = append(f.volumeCreateNames, name)
 	return f.volumeCreateErr
 }
 func (f *fakeMsb) VolumeRm(_ context.Context, name string) error {

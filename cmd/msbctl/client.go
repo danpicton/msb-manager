@@ -16,6 +16,7 @@ import (
 const (
 	exitOK          = 0
 	exitGeneric     = 1
+	exitPartial     = 2 // 207 Multi-Status: some items succeeded, some failed
 	exitClientError = 4
 	exitServerError = 5
 )
@@ -82,6 +83,11 @@ func (c *client) do(ctx context.Context, method, path string, body io.Reader, co
 // exitCodeForStatus maps an HTTP status onto a process exit code.
 func exitCodeForStatus(status int) int {
 	switch {
+	case status == http.StatusMultiStatus:
+		// Partial success — the body lists per-item outcomes; exit non-zero so
+		// unattended automation detects it. Kept generic (no volume-specific
+		// knowledge) to preserve msbctl's opacity (ADR-0007).
+		return exitPartial
 	case status >= 200 && status < 300:
 		return exitOK
 	case status >= 400 && status < 500:

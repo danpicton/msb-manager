@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,12 +25,56 @@ func handleListVolumes(client MsbClient) http.HandlerFunc {
 	}
 }
 
-// volumeRequest is the create-volume body. Two fields, two units of work — no
-// need for a dedicated package yet; if other endpoints grow similar shapes
-// they can graduate to internal/spec.
+// volumeRequest is one volume to provision: the single-create body and, reused,
+// each item of a batch manifest. Two fields, two units of work — no need for a
+// dedicated package yet; if other endpoints grow similar shapes they can
+// graduate to internal/spec.
 type volumeRequest struct {
 	Name string `yaml:"name" json:"name"`
 	Size string `yaml:"size" json:"size"`
+}
+
+// volumeManifest is the declarative batch-create body (POST /volumes with
+// {volumes:[...]}). It mirrors internal/spec's Parse + Validate pattern:
+// parseVolumeManifest decodes (rejecting unknown fields), validate() enforces
+// the required-field and identifier invariants pre-flight. Validation is
+// side-effect-free so a malformed batch is a 400 before any msb call runs.
+type volumeManifest struct {
+	Volumes []volumeRequest `yaml:"volumes" json:"volumes"`
+}
+
+// parseVolumeManifest decodes a YAML (or JSON) batch body. Unknown fields are
+// rejected so a typo surfaces as an error rather than a silent drop, matching
+// spec.Parse.
+func parseVolumeManifest(data []byte) (volumeManifest, error) {
+	var m volumeManifest
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&m); err != nil {
+		return volumeManifest{}, fmt.Errorf("parse volume manifest: %w", err)
+	}
+	return m, nil
+}
+
+// validate checks the batch is non-empty and every item is well-formed. It
+// makes no msb calls; a typo never half-applies (pre-flight is atomic).
+func (m volumeManifest) validate() error {
+	if len(m.Volumes) == 0 {
+		return errors.New("volumes list is empty or missing")
+	}
+	for i, v := range m.Volumes {
+		if v.Name == "" || v.Size == "" {
+			return fmt.Errorf("volumes[%d]: name and size are required", i)
+		}
+		// Reject identifiers/sizes msb would misparse as flags (issue #3).
+		if !msb.ValidName(v.Name) {
+			return fmt.Errorf("volumes[%d]: invalid volume name %q", i, v.Name)
+		}
+		if !msb.ValidSize(v.Size) {
+			return fmt.Errorf("volumes[%d]: invalid volume size %q", i, v.Size)
+		}
+	}
+	return nil
 }
 
 func handleCreateVolume(client MsbClient) http.HandlerFunc {
@@ -41,6 +86,24 @@ func handleCreateVolume(client MsbClient) http.HandlerFunc {
 		}
 		if len(body) > maxSpecBytes {
 			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "body too large"})
+			return
+		}
+
+		// Branch on the presence of a `volumes` key. A tolerant probe (no
+		// KnownFields) distinguishes the two shapes; each branch then re-decodes
+		// strictly so unknown fields are rejected in whichever shape applies. A
+		// non-nil pointer means the key was present even when the list is empty,
+		// so {"volumes":[]} routes to the batch path (and its 400) rather than
+		// being mistaken for a single create.
+		var probe struct {
+			Volumes *[]volumeRequest `yaml:"volumes"`
+		}
+		if err := yaml.Unmarshal(body, &probe); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if probe.Volumes != nil {
+			handleCreateVolumeBatch(w, r, client, body)
 			return
 		}
 
@@ -71,6 +134,95 @@ func handleCreateVolume(client MsbClient) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name, "size": req.Size})
 	}
+}
+
+// handleCreateVolumeBatch serves the declarative batch shape. Two phases,
+// deliberately separated (ADR-0009): pre-flight validate-all (atomic 400, zero
+// msb calls), then best-effort per-item execution where only `created` items
+// shell out to msb.VolumeCreate. 201 when every item is created/exists, 207 when
+// any item is an error.
+func handleCreateVolumeBatch(w http.ResponseWriter, r *http.Request, client MsbClient, body []byte) {
+	manifest, err := parseVolumeManifest(body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := manifest.validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// msb is the source of truth for what exists and at what size (ADR-0003);
+	// look it up once and reconcile against it.
+	volumes, err := client.VolumeList(r.Context())
+	if err != nil {
+		writeAdapterError(w, r, "list volumes", err)
+		return
+	}
+	existing := make(map[string]int, len(volumes))
+	for _, v := range volumes {
+		existing[v.Name] = v.QuotaMiB
+	}
+
+	results := planVolumeBatch(manifest.Volumes, existing)
+	for i := range results {
+		if results[i].Status != api.VolumeStatusCreated {
+			continue
+		}
+		if err := client.VolumeCreate(r.Context(), results[i].Name, results[i].Size); err != nil {
+			// Reuse the adapter-error classifier for a safe message — never raw
+			// msb stderr, which could leak (mirrors writeAdapterError).
+			_, msg := statusForAdapterError("create volume", err)
+			results[i].Status = api.VolumeStatusError
+			results[i].Error = msg
+		}
+	}
+
+	status := http.StatusCreated
+	for _, res := range results {
+		if res.Status == api.VolumeStatusError {
+			status = http.StatusMultiStatus
+			break
+		}
+	}
+	writeJSON(w, status, api.VolumeBatchResponse{Results: results})
+}
+
+// planVolumeBatch decides, per requested volume, what to do given the volumes
+// that already exist (name -> quota in MiB, from `msb volume ls`). It performs
+// NO subprocess calls — it is the pure reconcile seam (ADR-0003: msb is the
+// source of truth, passed in as `existing`). The handler then executes only the
+// `created` entries.
+//
+//   - absent                -> created
+//   - present, size matches -> exists
+//   - present, size differs -> error (msb can't shrink/grow; a mismatch is hard)
+//
+// "Same size" is a unit-normalised comparison via msb.ParseSizeMiB (1G == 1024M),
+// never string equality.
+func planVolumeBatch(req []volumeRequest, existing map[string]int) []api.VolumeResult {
+	out := make([]api.VolumeResult, 0, len(req))
+	for _, v := range req {
+		res := api.VolumeResult{Name: v.Name, Size: v.Size}
+		wantMiB, err := msb.ParseSizeMiB(v.Size)
+		if err != nil {
+			res.Status = api.VolumeStatusError
+			res.Error = err.Error()
+			out = append(out, res)
+			continue
+		}
+		switch haveMiB, ok := existing[v.Name]; {
+		case !ok:
+			res.Status = api.VolumeStatusCreated
+		case haveMiB == wantMiB:
+			res.Status = api.VolumeStatusExists
+		default:
+			res.Status = api.VolumeStatusError
+			res.Error = fmt.Sprintf("exists at %dMiB, cannot resize to %dMiB", haveMiB, wantMiB)
+		}
+		out = append(out, res)
+	}
+	return out
 }
 
 func handleDeleteVolume(client MsbClient, vlock *lock.VolumeLock) http.HandlerFunc {

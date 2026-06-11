@@ -316,6 +316,56 @@ func TestCmd_Volume_LsCreateRm(t *testing.T) {
 	})
 }
 
+func TestCmd_Volume_CreateFromManifest(t *testing.T) {
+	t.Run("posts manifest from stdin and renders results on 201", func(t *testing.T) {
+		rec := &recorder{
+			status:   http.StatusCreated,
+			respBody: `{"results":[{"name":"alpine-data","size":"1G","status":"created"}]}`,
+		}
+		srv := rec.server()
+		defer srv.Close()
+
+		manifest := "volumes:\n  - name: alpine-data\n    size: 1G\n"
+		out, _, code := runWith(t, srv.URL, strings.NewReader(manifest), "volume", "create", "-f", "-")
+		if code != exitOK {
+			t.Fatalf("exit = %d, want 0", code)
+		}
+		if rec.method != http.MethodPost || rec.path != "/volumes" {
+			t.Errorf("request = %s %s, want POST /volumes", rec.method, rec.path)
+		}
+		if !strings.Contains(rec.body, "alpine-data") {
+			t.Errorf("posted body missing manifest contents:\n%s", rec.body)
+		}
+		if !strings.Contains(out, "created") || !strings.Contains(out, "alpine-data") {
+			t.Errorf("output missing rendered results:\n%s", out)
+		}
+	})
+
+	t.Run("exits non-zero on 207 partial failure", func(t *testing.T) {
+		rec := &recorder{
+			status: http.StatusMultiStatus,
+			respBody: `{"results":[` +
+				`{"name":"alpine-data","size":"1G","status":"created"},` +
+				`{"name":"pg-data","size":"10G","status":"error","error":"exists at 5120MiB, cannot resize to 10240MiB"}]}`,
+		}
+		srv := rec.server()
+		defer srv.Close()
+
+		manifest := "volumes:\n  - name: alpine-data\n    size: 1G\n  - name: pg-data\n    size: 10G\n"
+		out, _, code := runWith(t, srv.URL, strings.NewReader(manifest), "volume", "create", "-f", "-")
+		if code == exitOK {
+			t.Fatal("exit = 0, want non-zero on 207")
+		}
+		if code != exitPartial {
+			t.Errorf("exit = %d, want exitPartial (%d)", code, exitPartial)
+		}
+		// The full result list is still rendered on a partial failure.
+		if !strings.Contains(out, "error") || !strings.Contains(out, "pg-data") {
+			t.Errorf("output missing the partial-failure results:\n%s", out)
+		}
+	})
+}
+
 func TestCmd_Snapshot_LsCreateRm(t *testing.T) {
 	t.Run("ls", func(t *testing.T) {
 		rec := &recorder{respBody: `[{"name":"snap","image_ref":"alpine","size_bytes":100,"created_at":"2026-06-06","parent_digest":null}]`}

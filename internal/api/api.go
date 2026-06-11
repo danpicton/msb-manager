@@ -192,3 +192,29 @@ func NewVolumes(in []msb.Volume) []Volume {
 	}
 	return out
 }
+
+// Per-item statuses for a batch volume-create (POST /volumes with a
+// {volumes:[...]} body). These string values are part of the wire contract, so
+// they live here in the public DTO package (ADR-0006) rather than as private
+// server constants.
+const (
+	VolumeStatusCreated = "created" // was absent; msb volume create ran
+	VolumeStatusExists  = "exists"  // present already at the requested size (no-op)
+	VolumeStatusError   = "error"   // size mismatch, or msb volume create failed
+)
+
+// VolumeResult is one entry in a batch volume-create response. Error is set
+// only when Status == VolumeStatusError.
+type VolumeResult struct {
+	Name   string `json:"name"`
+	Size   string `json:"size"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// VolumeBatchResponse is the body of a batch volume-create call: the full
+// per-item result list, returned with 201 (all created/exists) or 207 (any
+// error). A public DTO (ADR-0006) so the wire shape is owned here.
+type VolumeBatchResponse struct {
+	Results []VolumeResult `json:"results"`
+}
