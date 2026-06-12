@@ -171,6 +171,14 @@ func (s Spec) Validate() error {
 		if strings.Contains(sec.Host, "@") {
 			return fmt.Errorf("spec: secrets[%d].host must not contain '@'", i)
 		}
+		// FAIL-CLOSED (issue #22): which '@' msb v0.5.2 splits "VALUE@HOST" on
+		// is unverified, and the @HOST part is the egress allow-list — a
+		// first-'@' split would silently release the secret to a host derived
+		// from the value. Refuse '@' in values until upstream's split-at-last-
+		// '@' behaviour is verified (see CONTEXT.md "msb CLI surface").
+		if strings.Contains(sec.Value, "@") {
+			return fmt.Errorf("spec: secrets[%d].value must not contain '@' — it would make the assembled KEY=VALUE@HOST egress rule ambiguous", i)
+		}
 	}
 	return nil
 }
