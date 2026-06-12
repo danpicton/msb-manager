@@ -118,10 +118,15 @@ func reconcileVolumesWithRetry(ctx context.Context, client sandboxInspector, vlo
 			return nil
 		}
 		logger.Warn("startup volume reconcile failed; retrying before serving", "err", err, "backoff", backoff)
+		// NewTimer + Stop rather than time.After so the timer goroutine is
+		// released immediately when the shutdown branch wins, instead of
+		// lingering until backoff elapses.
+		t := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			return fmt.Errorf("startup volume reconcile abandoned: %w (last reconcile error: %v)", ctx.Err(), err)
-		case <-time.After(backoff):
+		case <-t.C:
 		}
 		backoff *= 2
 		if backoff > maxBackoff {
@@ -135,6 +140,15 @@ func main() {
 	slog.SetDefault(logger)
 
 	if err := run(logger); err != nil {
+		// A shutdown signal during the startup reconcile loop surfaces as a
+		// context.Canceled-wrapped error (issue #20 fail-closed path). That is
+		// an operator-requested stop, not a failure: exit 0 so a systemd
+		// Restart=on-failure unit lets the service stay stopped rather than
+		// bouncing it.
+		if errors.Is(err, context.Canceled) {
+			logger.Info("startup aborted by shutdown signal")
+			return
+		}
 		logger.Error("server exited with error", "err", err)
 		os.Exit(1)
 	}

@@ -81,14 +81,19 @@ func (l *VolumeLock) Release(sandbox string) {
 	}
 }
 
-// ReleaseVolumes frees exactly the given volumes, whoever holds them. Intended
-// for rolling back a failed AcquireMany with the newly-claimed list it
-// returned, so the rollback can never touch claims that pre-existed the call.
-func (l *VolumeLock) ReleaseVolumes(volumes []string) {
+// ReleaseVolumes frees the given volumes, but only those still held by
+// sandbox — mirroring Release's owner check (`h == sandbox`). Intended for
+// rolling back a failed AcquireMany with the newly-claimed list it returned;
+// the owner guard means even a stale or wrong slice can never strip a claim
+// another sandbox now holds (the same class of bug as issue #19, defended at
+// the method boundary).
+func (l *VolumeLock) ReleaseVolumes(volumes []string, sandbox string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, v := range volumes {
-		delete(l.held, v)
+		if l.held[v] == sandbox {
+			delete(l.held, v)
+		}
 	}
 }
 

@@ -79,7 +79,7 @@ func handleCreateSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerF
 			return
 		}
 		if err := client.Create(r.Context(), s.ToCreateOpts()); err != nil {
-			vlock.ReleaseVolumes(newlyClaimed)
+			vlock.ReleaseVolumes(newlyClaimed, s.Name)
 			writeAdapterError(w, r, "create sandbox", err)
 			return
 		}
@@ -117,7 +117,7 @@ func handleStartSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFu
 			return
 		}
 		if err := client.Start(r.Context(), name); err != nil {
-			vlock.ReleaseVolumes(newlyClaimed)
+			vlock.ReleaseVolumes(newlyClaimed, name)
 			writeAdapterError(w, r, "start sandbox", err)
 			return
 		}
