@@ -4,6 +4,11 @@
 *.exe
 *.test
 *.out
+# Compiled control-plane binary (`go build ./cmd/msb-manager` drops it at the
+# repo root). Anchored with a leading slash so it matches ONLY the root-level
+# binary — an unanchored `msb-manager` also matches the cmd/msb-manager/
+# package directory and silently ignores its source (e.g. main_test.go).
+/msb-manager
 
 # Go workspace
 go.work
@@ -25,7 +30,6 @@ credentials
 
 # Local Claude state
 .claude/
-msb-manager
 
 # Handoff brief — local working note, not version controlled
 HANDOFF.md
