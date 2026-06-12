@@ -67,14 +67,19 @@ func handleCreateSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerF
 		}
 
 		// Claim any named volume before touching msb. On adapter failure we
-		// roll back so the volume isn't held by a sandbox that doesn't exist.
+		// roll back so the volume isn't held by a sandbox that doesn't exist —
+		// but only the claims this request newly made: a retried create of an
+		// already-running sandbox re-claims its volume idempotently, and
+		// releasing that pre-existing claim would free the volume for a
+		// double-mount (issue #19).
 		volumes := volumesFromSpec(s)
-		if err := vlock.AcquireMany(volumes, s.Name); err != nil {
+		newlyClaimed, err := vlock.AcquireMany(volumes, s.Name)
+		if err != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
 		if err := client.Create(r.Context(), s.ToCreateOpts()); err != nil {
-			vlock.Release(s.Name)
+			vlock.ReleaseVolumes(newlyClaimed, s.Name)
 			writeAdapterError(w, r, "create sandbox", err)
 			return
 		}
@@ -102,13 +107,17 @@ func handleStartSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFu
 			writeAdapterError(w, r, "start sandbox", err)
 			return
 		}
+		// As with create, roll back only the claims this request newly made —
+		// a failed start of an already-running sandbox must not strip the
+		// running instance's claims (issue #19).
 		volumes := detail.VolumeNames()
-		if err := vlock.AcquireMany(volumes, name); err != nil {
+		newlyClaimed, err := vlock.AcquireMany(volumes, name)
+		if err != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
 		if err := client.Start(r.Context(), name); err != nil {
-			vlock.Release(name)
+			vlock.ReleaseVolumes(newlyClaimed, name)
 			writeAdapterError(w, r, "start sandbox", err)
 			return
 		}

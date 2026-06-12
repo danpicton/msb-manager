@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -189,17 +190,36 @@ func TestValidate_SecretsRequireAllFields(t *testing.T) {
 
 // The key/value/host string assembles into "KEY=VALUE@HOST"; any of those
 // characters appearing inside the key or host would make the arg ambiguous to
-// msb. (Value can contain '=' fine — only first '=' is the separator on msb's
-// side; '@' inside value is also msb's call. We refuse the structural ones.)
+// msb. (Value can contain '=' fine — only the first '=' is the separator on
+// msb's side.) A '@' inside the value is also refused (issue #22): which '@'
+// msb v0.5.2 splits on is unverified, and a first-'@' split would silently
+// rewrite the egress allow-list host — the @HOST part is a security control.
 func TestValidate_SecretFieldsRejectSeparatorChars(t *testing.T) {
 	cases := []Spec{
 		{Name: "x", Image: "alpine", Secrets: []Secret{{Key: "K=Y", Value: "v", Host: "h"}}}, // = in key
 		{Name: "x", Image: "alpine", Secrets: []Secret{{Key: "K@Y", Value: "v", Host: "h"}}}, // @ in key
 		{Name: "x", Image: "alpine", Secrets: []Secret{{Key: "K", Value: "v", Host: "h@i"}}}, // @ in host
+		// @ in value — realistic shape: a connection URL with inline creds.
+		{Name: "x", Image: "alpine", Secrets: []Secret{{Key: "DB_URL", Value: "postgres://u:p@db.internal/x", Host: "db.internal"}}},
 	}
 	for _, s := range cases {
 		if err := s.Validate(); err == nil {
 			t.Errorf("Validate(%+v): got nil, want error", s)
+		}
+	}
+}
+
+// The value-side rejection must explain itself: the client sees a precise 400
+// naming the field and the constraint, not a generic parse failure from msb.
+func TestValidate_SecretValueWithAtSignErrorNamesConstraint(t *testing.T) {
+	s := Spec{Name: "x", Image: "alpine", Secrets: []Secret{{Key: "K", Value: "a@b", Host: "h"}}}
+	err := s.Validate()
+	if err == nil {
+		t.Fatal("Validate: got nil, want error for '@' in secret value")
+	}
+	for _, want := range []string{"secrets[0].value", "'@'"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should contain %q", err.Error(), want)
 		}
 	}
 }

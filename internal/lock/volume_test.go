@@ -41,7 +41,7 @@ func TestAcquireMany_AtomicOnConflict(t *testing.T) {
 	_ = l.Acquire("vol2", "alice")
 
 	// bob asks for vol1 + vol2; vol2 is held by alice -> whole call fails.
-	err := l.AcquireMany([]string{"vol1", "vol2"}, "bob")
+	_, err := l.AcquireMany([]string{"vol1", "vol2"}, "bob")
 	if !errors.Is(err, ErrVolumeBusy) {
 		t.Fatalf("got %v, want ErrVolumeBusy", err)
 	}
@@ -51,9 +51,80 @@ func TestAcquireMany_AtomicOnConflict(t *testing.T) {
 	}
 }
 
+// Issue #19: a failed create/start must roll back only the claims it newly
+// acquired, never claims that pre-existed the request (e.g. a client retrying
+// the create of an already-running sandbox). AcquireMany reports the
+// newly-claimed subset; releasing exactly that subset must leave the running
+// instance's claims intact.
+func TestAcquireMany_RollbackOfNewClaimsKeepsPreExistingClaims(t *testing.T) {
+	cases := []struct {
+		name    string
+		volumes []string
+	}{
+		{name: "retry with same volume", volumes: []string{"data"}},
+		{name: "retry with no volume", volumes: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := New()
+			_ = l.Acquire("data", "web") // web is already running, mounted on data
+
+			newly, err := l.AcquireMany(tc.volumes, "web")
+			if err != nil {
+				t.Fatalf("AcquireMany(%v, web): %v", tc.volumes, err)
+			}
+			if len(newly) != 0 {
+				t.Errorf("newly = %v, want none (data was already web's)", newly)
+			}
+			l.ReleaseVolumes(newly, "web") // the failed-create rollback path
+
+			if err := l.Acquire("data", "other"); !errors.Is(err, ErrVolumeBusy) {
+				t.Errorf("data should still be web's after rollback; got %v", err)
+			}
+		})
+	}
+}
+
+func TestAcquireMany_ReportsOnlyNewClaims(t *testing.T) {
+	l := New()
+	_ = l.Acquire("data", "web")
+
+	newly, err := l.AcquireMany([]string{"data", "cache"}, "web")
+	if err != nil {
+		t.Fatalf("AcquireMany([data cache], web): %v", err)
+	}
+	if len(newly) != 1 || newly[0] != "cache" {
+		t.Fatalf("newly = %v, want [cache]", newly)
+	}
+	l.ReleaseVolumes(newly, "web")
+
+	// The rollback freed cache but kept the pre-existing data claim.
+	if err := l.Acquire("cache", "other"); err != nil {
+		t.Errorf("cache should be free after rollback; got %v", err)
+	}
+	if err := l.Acquire("data", "other"); !errors.Is(err, ErrVolumeBusy) {
+		t.Errorf("data should still be web's after rollback; got %v", err)
+	}
+}
+
+// ReleaseVolumes must honour ownership: handed a volume now held by a
+// different sandbox, it leaves that claim intact (mirrors Release's owner
+// check, defends the same class of bug as issue #19 at the method boundary).
+func TestReleaseVolumes_DoesNotStripAnotherSandboxsClaim(t *testing.T) {
+	l := New()
+	_ = l.Acquire("data", "web") // web now holds data
+
+	// A stale rollback that thinks it owns data must not free web's claim.
+	l.ReleaseVolumes([]string{"data"}, "ghost")
+
+	if err := l.Acquire("data", "other"); !errors.Is(err, ErrVolumeBusy) {
+		t.Errorf("data should still be web's; got %v", err)
+	}
+}
+
 func TestRelease_FreesAllVolumesOfSandbox(t *testing.T) {
 	l := New()
-	_ = l.AcquireMany([]string{"v1", "v2", "v3"}, "alice")
+	_, _ = l.AcquireMany([]string{"v1", "v2", "v3"}, "alice")
 	_ = l.Acquire("vOther", "bob")
 
 	l.Release("alice")
