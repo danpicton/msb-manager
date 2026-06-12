@@ -502,6 +502,58 @@ volume:
 	}
 }
 
+// Issue #19: a failed create of a name whose running instance already holds a
+// volume must not strip that claim on rollback. The repro is an innocent
+// client retry: web is running with data claimed, the retried POST fails with
+// already-exists, and the rollback must leave {data: web} intact — proven by a
+// follow-up conflicting create still returning 409.
+func TestPostSandboxes_FailedDuplicateCreateKeepsRunningInstanceClaims(t *testing.T) {
+	cases := []struct {
+		name string
+		body string // the retried create of the running sandbox "web"
+	}{
+		{
+			name: "retry with same volume",
+			body: "name: web\nimage: alpine\nvolume:\n  name: data\n  mount: /workspace\n",
+		},
+		{
+			name: "retry with no volume",
+			body: "name: web\nimage: alpine\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeMsb{createErr: msb.ErrSandboxAlreadyExists}
+			vlock := lock.New()
+			_ = vlock.Acquire("data", "web") // web is running, mounted on data
+			srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+			req := httptest.NewRequest(http.MethodPost, "/sandboxes", strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			req.Header.Set("Content-Type", "application/yaml")
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("retried create: status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+			}
+
+			// data must still be web's: a conflicting create by another sandbox
+			// has to be refused, or we have the double-mount the lock exists to
+			// prevent.
+			client.createErr = nil
+			rec = httptest.NewRecorder()
+			srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/sandboxes",
+				`{"name":"other","image":"alpine","volume":{"name":"data","mount":"/workspace"}}`))
+
+			if rec.Code != http.StatusConflict {
+				t.Errorf("conflicting create after rollback: status = %d, want 409; body=%s",
+					rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 // Start needs to look up the sandbox's volumes (via Inspect) before claiming.
 func TestPostSandboxStart_AcquiresVolumesFromInspect(t *testing.T) {
 	client := &fakeMsb{
@@ -543,6 +595,39 @@ func TestPostSandboxStart_VolumeBusyReturns409(t *testing.T) {
 	}
 	if client.gotStartName != "" {
 		t.Error("Start invoked despite volume conflict")
+	}
+}
+
+// Issue #19, start-path twin: a failed start of a name whose running instance
+// already holds a volume (e.g. starting an already-running sandbox and msb
+// errors) must not strip that claim on rollback.
+func TestPostSandboxStart_FailedStartKeepsRunningInstanceClaims(t *testing.T) {
+	client := &fakeMsb{
+		inspectOut: msb.SandboxDetail{
+			Name:   "web",
+			Mounts: []msb.Mount{{Type: "Named", Name: "data", Guest: "/workspace"}},
+		},
+		startErr: errors.New("boom"),
+	}
+	vlock := lock.New()
+	_ = vlock.Acquire("data", "web") // web is running, mounted on data
+	srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodPost, "/sandboxes/web/start"))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed start: status = %d, want 500", rec.Code)
+	}
+
+	// data must still be web's: a conflicting create has to be refused.
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/sandboxes",
+		`{"name":"other","image":"alpine","volume":{"name":"data","mount":"/workspace"}}`))
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("conflicting create after rollback: status = %d, want 409; body=%s",
+			rec.Code, rec.Body.String())
 	}
 }
 

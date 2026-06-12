@@ -46,18 +46,28 @@ func (l *VolumeLock) Acquire(volume, sandbox string) error {
 
 // AcquireMany claims all volumes for sandbox atomically: either every volume
 // becomes the sandbox's claim, or none do (no partial state on conflict).
-func (l *VolumeLock) AcquireMany(volumes []string, sandbox string) error {
+//
+// It returns the subset of volumes this call newly claimed — i.e. excluding
+// any the sandbox already held. A failed operation must roll back via
+// ReleaseVolumes with exactly that subset, never Release(sandbox): the
+// idempotent re-claim of an already-running sandbox's volume (a client retry)
+// is not a new claim, and stripping it would let another sandbox double-mount
+// the volume (issue #19).
+func (l *VolumeLock) AcquireMany(volumes []string, sandbox string) (newlyClaimed []string, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, v := range volumes {
 		if h, ok := l.held[v]; ok && h != sandbox {
-			return fmt.Errorf("%w: %q held by %q", ErrVolumeBusy, v, h)
+			return nil, fmt.Errorf("%w: %q held by %q", ErrVolumeBusy, v, h)
 		}
 	}
 	for _, v := range volumes {
+		if _, ok := l.held[v]; !ok {
+			newlyClaimed = append(newlyClaimed, v)
+		}
 		l.held[v] = sandbox
 	}
-	return nil
+	return newlyClaimed, nil
 }
 
 // Release frees every volume currently held by sandbox.
@@ -68,6 +78,17 @@ func (l *VolumeLock) Release(sandbox string) {
 		if h == sandbox {
 			delete(l.held, v)
 		}
+	}
+}
+
+// ReleaseVolumes frees exactly the given volumes, whoever holds them. Intended
+// for rolling back a failed AcquireMany with the newly-claimed list it
+// returned, so the rollback can never touch claims that pre-existed the call.
+func (l *VolumeLock) ReleaseVolumes(volumes []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, v := range volumes {
+		delete(l.held, v)
 	}
 }
 
