@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -409,6 +410,56 @@ func TestCmd_Snapshot_LsCreateRm(t *testing.T) {
 			t.Errorf("request = %s %s, want DELETE /snapshots/snap", rec.method, rec.path)
 		}
 	})
+}
+
+// Issue #11: snapshot create must be able to send labels (load-bearing for
+// lineage via msb.parent). --label key=value is repeatable and serialises into
+// a "labels" object in the request body. Asserted on the marshalled body the
+// server receives.
+func TestCmd_Snapshot_CreateWithLabels(t *testing.T) {
+	rec := &recorder{status: http.StatusCreated, respBody: `{"name":"snap","from":"web"}`}
+	srv := rec.server()
+	defer srv.Close()
+
+	_, _, code := runWith(t, srv.URL, nil, "snapshot", "create", "snap",
+		"--from", "web", "--label", "team=ops", "--label", "msb.parent=base")
+	if code != exitOK {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+
+	var body struct {
+		From   string            `json:"from"`
+		Name   string            `json:"name"`
+		Labels map[string]string `json:"labels"`
+	}
+	if err := json.Unmarshal([]byte(rec.body), &body); err != nil {
+		t.Fatalf("request body not JSON: %v; body=%s", err, rec.body)
+	}
+	if body.From != "web" || body.Name != "snap" {
+		t.Errorf("body from/name = %q/%q, want web/snap", body.From, body.Name)
+	}
+	if body.Labels["team"] != "ops" || body.Labels["msb.parent"] != "base" {
+		t.Errorf("labels = %+v, want team=ops msb.parent=base", body.Labels)
+	}
+}
+
+// A label without '=' is a user error and must fail before any request goes out.
+func TestCmd_Snapshot_CreateRejectsMalformedLabel(t *testing.T) {
+	rec := &recorder{status: http.StatusCreated}
+	srv := rec.server()
+	defer srv.Close()
+
+	_, errOut, code := runWith(t, srv.URL, nil, "snapshot", "create", "snap",
+		"--from", "web", "--label", "nokey")
+	if code == exitOK {
+		t.Fatal("malformed --label should fail the command")
+	}
+	if rec.method != "" {
+		t.Error("no request should go out when a --label is malformed")
+	}
+	if !strings.Contains(errOut, "KEY=VALUE") {
+		t.Errorf("stderr = %q, want a KEY=VALUE format message", errOut)
+	}
 }
 
 // Server errors are rendered to stderr and mapped to a non-zero exit code.

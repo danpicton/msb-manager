@@ -649,6 +649,35 @@ func TestPostSandboxStop_ReleasesVolumes(t *testing.T) {
 	}
 }
 
+// Issue #21: an out-of-band-removed sandbox makes msb stop exit with
+// "sandbox not found". That error is authoritative proof the sandbox isn't
+// running, so the stop handler must release its volume claims before returning
+// 404 — otherwise the claim leaks and the volume reads busy forever. Proven by
+// HTTP-visible effects: a conflicting create succeeds and DELETE /volumes is no
+// longer refused.
+func TestPostSandboxStop_NotFoundReleasesVolumes(t *testing.T) {
+	client := &fakeMsb{stopErr: msb.ErrSandboxNotFound}
+	vlock := lock.New()
+	_ = vlock.Acquire("myvol", "alice") // a stale claim from the removed sandbox
+	srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodPost, "/sandboxes/alice/stop"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// myvol must now be free: a conflicting create by another sandbox succeeds.
+	client.stopErr = nil
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/sandboxes",
+		`{"name":"bob","image":"alpine","volume":{"name":"myvol","mount":"/workspace"}}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("conflicting create after release: status = %d, want 201; body=%s",
+			rec.Code, rec.Body.String())
+	}
+}
+
 func TestDeleteSandbox_ReleasesVolumes(t *testing.T) {
 	client := &fakeMsb{}
 	vlock := lock.New()
@@ -663,6 +692,78 @@ func TestDeleteSandbox_ReleasesVolumes(t *testing.T) {
 	}
 	if err := vlock.Acquire("myvol", "bob"); err != nil {
 		t.Errorf("myvol should be free after Delete(alice); got %v", err)
+	}
+}
+
+// Issue #21, delete twin: msb rm of an out-of-band-removed sandbox exits
+// "sandbox not found"; the delete handler must release its volume claims before
+// returning 404. Proven via the volume-delete pre-check: DELETE /volumes is no
+// longer refused once the stale claim is gone.
+func TestDeleteSandbox_NotFoundReleasesVolumes(t *testing.T) {
+	client := &fakeMsb{rmErr: msb.ErrSandboxNotFound}
+	vlock := lock.New()
+	_ = vlock.Acquire("myvol", "alice") // a stale claim from the removed sandbox
+	srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodDelete, "/sandboxes/alice"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// The Holder pre-check on DELETE /volumes must no longer refuse: the claim
+	// is gone, so the volume delete is forwarded to msb (204).
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, authed(http.MethodDelete, "/volumes/myvol"))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("volume delete after release: status = %d, want 204; body=%s",
+			rec.Code, rec.Body.String())
+	}
+}
+
+// Other adapter errors do NOT prove the sandbox is gone, so a failing
+// stop/delete on those paths must KEEP the claim (issue #21: only release on
+// ErrSandboxNotFound). A timeout leaves the running instance's claim intact.
+func TestStopDelete_NonNotFoundErrorKeepsClaim(t *testing.T) {
+	cases := []struct {
+		name string
+		req  *http.Request
+		set  func(*fakeMsb)
+	}{
+		{
+			name: "stop times out",
+			req:  authed(http.MethodPost, "/sandboxes/alice/stop"),
+			set:  func(f *fakeMsb) { f.stopErr = msb.ErrTimeout },
+		},
+		{
+			name: "rm still running",
+			req:  authed(http.MethodDelete, "/sandboxes/alice"),
+			set:  func(f *fakeMsb) { f.rmErr = msb.ErrSandboxStillRunning },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeMsb{}
+			tc.set(client)
+			vlock := lock.New()
+			_ = vlock.Acquire("myvol", "alice")
+			srv := newWithLock(Config{Token: testToken}, client, vlock)
+
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, tc.req)
+			if rec.Code < 400 {
+				t.Fatalf("status = %d, want an error status", rec.Code)
+			}
+
+			// alice's claim must survive: a conflicting create is still refused.
+			rec = httptest.NewRecorder()
+			srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/sandboxes",
+				`{"name":"bob","image":"alpine","volume":{"name":"myvol","mount":"/workspace"}}`))
+			if rec.Code != http.StatusConflict {
+				t.Errorf("conflicting create: status = %d, want 409 (claim must survive); body=%s",
+					rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

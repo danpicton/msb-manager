@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -412,6 +411,8 @@ func cmdSnapshot(ctx context.Context, env *runEnv, args []string) int {
 		fs := flag.NewFlagSet("snapshot create", flag.ContinueOnError)
 		from := fs.String("from", "", "source stopped sandbox (required)")
 		force := fs.Bool("force", false, "overwrite an existing snapshot of the same name")
+		labels := &kvFlag{}
+		fs.Var(labels, "label", "set a snapshot label (repeatable): --label KEY=VALUE")
 		pos, ok := env.parseFlags(fs, rest)
 		if !ok {
 			return exitGeneric
@@ -424,7 +425,7 @@ func cmdSnapshot(ctx context.Context, env *runEnv, args []string) int {
 			fmt.Fprintln(env.stderr, "error: snapshot create requires --from <sandbox>")
 			return exitGeneric
 		}
-		body := snapshotCreateBody(*from, name, *force)
+		body := snapshotCreateBody(*from, name, *force, labels.m)
 		return env.doAction(ctx, http.MethodPost, "/snapshots", strings.NewReader(body), "application/json", "created snapshot "+name)
 	case "rm":
 		fs := flag.NewFlagSet("snapshot rm", flag.ContinueOnError)
@@ -451,9 +452,17 @@ func volumeCreateBody(name, size string) string {
 	return fmt.Sprintf(`{"name":%s,"size":%s}`, jsonString(name), jsonString(size))
 }
 
-func snapshotCreateBody(from, name string, force bool) string {
-	return fmt.Sprintf(`{"from":%s,"name":%s,"force":%s}`,
-		jsonString(from), jsonString(name), strconv.FormatBool(force))
+// snapshotCreateBody marshals via an anonymous struct rather than a hand-built
+// fmt.Sprintf: the nested `labels` object makes string assembly an ordering
+// hazard (issue #16), and json.Marshal handles escaping and omitempty for us.
+func snapshotCreateBody(from, name string, force bool, labels map[string]string) string {
+	b, _ := json.Marshal(struct {
+		From   string            `json:"from"`
+		Name   string            `json:"name"`
+		Force  bool              `json:"force"`
+		Labels map[string]string `json:"labels,omitempty"`
+	}{From: from, Name: name, Force: force, Labels: labels})
+	return string(b)
 }
 
 // jsonString quotes a string as a JSON literal so a value with a quote or

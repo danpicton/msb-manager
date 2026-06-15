@@ -132,6 +132,12 @@ func handleStopSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerFun
 			return
 		}
 		if err := client.Stop(r.Context(), name); err != nil {
+			// A "sandbox not found" from msb is authoritative proof the sandbox
+			// isn't running (e.g. removed out-of-band), so releasing its claim
+			// here is strictly safe and stops the volume leaking (issue #21).
+			if errors.Is(err, msb.ErrSandboxNotFound) {
+				vlock.Release(name)
+			}
 			writeAdapterError(w, r, "stop sandbox", err)
 			return
 		}
@@ -148,6 +154,11 @@ func handleDeleteSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerF
 			return
 		}
 		if err := client.Rm(r.Context(), name); err != nil {
+			// As with stop, a "sandbox not found" proves the sandbox is gone, so
+			// release its claim before the 404 rather than leaking it (issue #21).
+			if errors.Is(err, msb.ErrSandboxNotFound) {
+				vlock.Release(name)
+			}
 			writeAdapterError(w, r, "remove sandbox", err)
 			return
 		}
