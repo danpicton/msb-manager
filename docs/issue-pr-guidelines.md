@@ -24,7 +24,7 @@ A reviewer should find any answer in under a minute. Five short sections, option
 - **Risk & rollback** — only when the change can break something at runtime.
 - **Invariants** — if the PR touches an invariant from [CLAUDE.md](../CLAUDE.md), it must link the new ADR that authorises the change. No ADR, no merge.
 
-Keep the diff focused: one issue per PR. If the work grew, split the PR rather than grow the description.
+Keep the diff focused. Related issues may be grouped into one PR when they share a seam and review reads more naturally together — link each (`Closes #N, Closes #M`) and keep them as separate, self-contained commits. If the work sprawled beyond what a reviewer can follow in one sitting, split the PR rather than grow the description.
 
 ## Sources
 
