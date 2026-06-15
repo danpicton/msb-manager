@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -63,9 +64,24 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	}
 }
 
+// sandboxInspector is the slice of the msb adapter the startup reconcile
+// needs. An interface so tests can drive the retry loop with a fake.
+type sandboxInspector interface {
+	List(ctx context.Context) ([]msb.Sandbox, error)
+	Inspect(ctx context.Context, name string) (msb.SandboxDetail, error)
+}
+
+// Backoff bounds for the startup reconcile retry loop. The expected failure
+// mode is msb being transiently slow or hung (CONTEXT verification #3), so
+// retries start quick and cap low — msb usually recovers within seconds.
+const (
+	reconcileInitialBackoff = 1 * time.Second
+	reconcileMaxBackoff     = 30 * time.Second
+)
+
 // reconcileVolumes builds the initial volume->sandbox map from msb's running
 // sandboxes, and hands it to the lock as authoritative truth.
-func reconcileVolumes(ctx context.Context, client *msb.Client, vlock *lock.VolumeLock) error {
+func reconcileVolumes(ctx context.Context, client sandboxInspector, vlock *lock.VolumeLock) error {
 	sandboxes, err := client.List(ctx)
 	if err != nil {
 		return err
@@ -87,11 +103,52 @@ func reconcileVolumes(ctx context.Context, client *msb.Client, vlock *lock.Volum
 	return nil
 }
 
+// reconcileVolumesWithRetry runs reconcileVolumes until it succeeds, backing
+// off between attempts. FAIL-CLOSED DECISION (issue #20): the volume lock is
+// the only guard against double-mounting a volume, so the server must never
+// serve lock-guarded mutations with an unseeded lock. The listener is not
+// started until this returns nil — mutations are gated by construction. The
+// only other exit is ctx cancellation (a shutdown signal during the loop), in
+// which case startup aborts with an error.
+func reconcileVolumesWithRetry(ctx context.Context, client sandboxInspector, vlock *lock.VolumeLock, logger *slog.Logger, initialBackoff, maxBackoff time.Duration) error {
+	backoff := initialBackoff
+	for {
+		err := reconcileVolumes(ctx, client, vlock)
+		if err == nil {
+			return nil
+		}
+		logger.Warn("startup volume reconcile failed; retrying before serving", "err", err, "backoff", backoff)
+		// NewTimer + Stop rather than time.After so the timer goroutine is
+		// released immediately when the shutdown branch wins, instead of
+		// lingering until backoff elapses.
+		t := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return fmt.Errorf("startup volume reconcile abandoned: %w (last reconcile error: %v)", ctx.Err(), err)
+		case <-t.C:
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(logger)
 
 	if err := run(logger); err != nil {
+		// A shutdown signal during the startup reconcile loop surfaces as a
+		// context.Canceled-wrapped error (issue #20 fail-closed path). That is
+		// an operator-requested stop, not a failure: exit 0 so a systemd
+		// Restart=on-failure unit lets the service stay stopped rather than
+		// bouncing it.
+		if errors.Is(err, context.Canceled) {
+			logger.Info("startup aborted by shutdown signal")
+			return
+		}
 		logger.Error("server exited with error", "err", err)
 		os.Exit(1)
 	}
@@ -105,14 +162,21 @@ func run(logger *slog.Logger) error {
 
 	msbClient := msb.NewClientWithTimeout(cfg.MsbPath, msb.ExecRunner{}, cfg.CmdTimeout)
 
+	// Installed before the reconcile loop so a shutdown signal during a long
+	// retry aborts startup rather than waiting for the next attempt.
+	signalCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	// Seed the volume lock from msb's actual running state so a crash-restart
-	// doesn't briefly think every volume is free.
+	// doesn't think every volume is free. Fail closed (issue #20): keep
+	// retrying — never listen — until a reconcile succeeds, because the most
+	// likely failure is msb being transiently hung (CONTEXT verification #3)
+	// and serving with an empty lock would let a create/start double-mount
+	// every volume held by a sandbox that was running before the restart.
 	vlock := lock.New()
-	if err := reconcileVolumes(context.Background(), msbClient, vlock); err != nil {
-		// Don't fail to start — log and continue with an empty lock. A
-		// reconcile failure usually means msb is down, in which case lifecycle
-		// calls will fail anyway with a clearer error.
-		logger.Warn("startup volume reconcile failed; lock starts empty", "err", err)
+	if err := reconcileVolumesWithRetry(signalCtx, msbClient, vlock, logger,
+		reconcileInitialBackoff, reconcileMaxBackoff); err != nil {
+		return err
 	}
 
 	srv := newHTTPServer(
@@ -130,9 +194,6 @@ func run(logger *slog.Logger) error {
 		}
 		listenErr <- nil
 	}()
-
-	signalCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	select {
 	case err := <-listenErr:
