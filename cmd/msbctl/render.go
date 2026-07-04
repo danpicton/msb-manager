@@ -67,9 +67,16 @@ func writeYAMLOut(w io.Writer, body []byte) error {
 
 // renderTable prints a compact human table. A JSON array becomes one row per
 // element over the given columns; a JSON object becomes a key/value listing.
+// An empty body is a valid empty-result state (no handler produces one today,
+// but a future 200-with-no-body must not surface as a JSON decode error,
+// issue #14).
 func renderTable(w io.Writer, body []byte, columns []string) error {
 	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) > 0 && trimmed[0] == '[' {
+	if len(trimmed) == 0 {
+		_, err := io.WriteString(w, "(empty)\n")
+		return err
+	}
+	if trimmed[0] == '[' {
 		return renderListTable(w, trimmed, columns)
 	}
 	return renderObjectTable(w, trimmed)

@@ -6,6 +6,21 @@ import (
 	"testing"
 )
 
+// An empty 200 body is a normal empty-result state, not a decode failure
+// (issue #14): it must render "(empty)" with a nil error, not surface
+// "unexpected end of JSON input".
+func TestRenderTable_EmptyBody(t *testing.T) {
+	for _, body := range [][]byte{nil, {}, []byte("  \n")} {
+		var buf bytes.Buffer
+		if err := renderTable(&buf, body, []string{"name"}); err != nil {
+			t.Fatalf("renderTable(%q): %v, want nil", body, err)
+		}
+		if buf.String() != "(empty)\n" {
+			t.Errorf("renderTable(%q) = %q, want %q", body, buf.String(), "(empty)\n")
+		}
+	}
+}
+
 func TestRenderRead_JSONIsVerbatimPassthrough(t *testing.T) {
 	body := []byte(`[{"name":"a","status":"Running"}]`)
 	var buf bytes.Buffer
