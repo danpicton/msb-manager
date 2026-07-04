@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -102,6 +104,28 @@ func loadConfig(path string, warn func(string)) (*configFile, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	return &cfg, nil
+}
+
+// shouldWarnCleartext reports whether the resolved target would send the
+// bearer token over cleartext HTTP to a non-loopback host (issue #25) — one
+// capture on the wire compromises the whole control plane. Loopback http (the
+// default deployment: msb-manager binds loopback, Caddy terminates TLS) and
+// any https target stay silent. Warn, don't fail (ADR-0007); an unparseable
+// URL is not warned about here — the request itself fails with a clearer
+// error.
+func shouldWarnCleartext(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
 }
 
 // configPath returns the config-file location: $XDG_CONFIG_HOME/msbctl/config.yaml,

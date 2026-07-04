@@ -90,6 +90,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitGeneric
 	}
+	if shouldWarnCleartext(tgt.URL) {
+		fmt.Fprintf(stderr, "warning: target %s is cleartext http to a non-loopback host; the bearer token will be sent unencrypted — use an https URL\n", tgt.URL)
+	}
 
 	env := &runEnv{
 		client: newClient(tgt),
