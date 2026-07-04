@@ -2,6 +2,7 @@ package msb
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -65,5 +66,46 @@ func TestExecRunner_CapturesStderr(t *testing.T) {
 	}
 	if !strings.Contains(string(stderr), "boom") {
 		t.Errorf("stderr = %q, want to contain %q", stderr, "boom")
+	}
+}
+
+// --- capture cap (PR #34 review, finding 2) ---
+
+// Exec runs arbitrary guest commands, so captured output must be bounded: an
+// unbounded buffer lets one `exec <name> -- yes` grow the control plane's
+// memory for the full timeout window on the same host that runs the VMs.
+// Past the cap the runner keeps DRAINING (so the child never blocks on a full
+// pipe) but stops storing, and surfaces ErrOutputTooLarge.
+func TestExecRunner_OverCapOutputIsBoundedError(t *testing.T) {
+	r := ExecRunner{MaxCaptureBytes: 1024}
+	stdout, _, err := r.Run(context.Background(), "sh", "-c", "head -c 4096 /dev/zero")
+	if !errors.Is(err, ErrOutputTooLarge) {
+		t.Fatalf("err = %v, want ErrOutputTooLarge", err)
+	}
+	if len(stdout) > 1024 {
+		t.Errorf("captured %d bytes, want at most the 1024 cap", len(stdout))
+	}
+}
+
+func TestExecRunner_UnderCapIsUnchanged(t *testing.T) {
+	r := ExecRunner{MaxCaptureBytes: 1024}
+	stdout, _, err := r.Run(context.Background(), "printf", "%s", "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(stdout) != "hello" {
+		t.Errorf("stdout = %q, want hello", stdout)
+	}
+}
+
+// The stderr stream is capped independently of stdout.
+func TestExecRunner_StderrCappedToo(t *testing.T) {
+	r := ExecRunner{MaxCaptureBytes: 1024}
+	_, stderr, err := r.Run(context.Background(), "sh", "-c", "head -c 4096 /dev/zero 1>&2")
+	if !errors.Is(err, ErrOutputTooLarge) {
+		t.Fatalf("err = %v, want ErrOutputTooLarge", err)
+	}
+	if len(stderr) > 1024 {
+		t.Errorf("captured %d stderr bytes, want at most the 1024 cap", len(stderr))
 	}
 }

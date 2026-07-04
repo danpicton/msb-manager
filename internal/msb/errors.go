@@ -27,6 +27,12 @@ var (
 	// lifetime (issue #4). It's distinct from a non-zero exit so the HTTP layer
 	// can map it to 504 Gateway Timeout rather than 500.
 	ErrTimeout = errors.New("msb: command timed out")
+
+	// ErrOutputTooLarge is returned when a child's stdout or stderr exceeded
+	// the runner's capture cap (PR #34 review, finding 2). The captured prefix
+	// is still returned alongside it for logging, but the invocation is an
+	// adapter failure — never a truncated-but-successful result.
+	ErrOutputTooLarge = errors.New("msb: command output exceeded capture limit")
 )
 
 // classifyError inspects msb's stderr text and, if a known category is found,
@@ -42,6 +48,32 @@ func classifyError(stderr string) error {
 	for _, c := range classifierTable {
 		if i := strings.Index(s, c.prefix); i >= 0 {
 			detail := strings.TrimSpace(s[i+len(c.prefix):])
+			return fmt.Errorf("%w: %s", c.err, detail)
+		}
+	}
+	return nil
+}
+
+// classifyErrorAnchored is classifyError for streams that are NOT purely
+// msb-authored — today, exec's stderr, which is mostly the guest command's
+// output (PR #34 review, finding 1). It only honours a category that appears
+// at the very start of stderr as msb's own `error: <category>: <details>`
+// line. That anchor holds because a genuine msb failure (sandbox not found)
+// happens *before* the guest produces any output; a category substring in the
+// middle of guest output (a grep hit, a traceback) can no longer collide.
+// A guest that deliberately prints the exact prefix first can still spoof —
+// but only the caller's own request, which the single trust domain already
+// lets it do more directly.
+func classifyErrorAnchored(stderr string) error {
+	s := strings.TrimSpace(stderr)
+	const errPrefix = "error: "
+	if !strings.HasPrefix(s, errPrefix) {
+		return nil
+	}
+	rest := s[len(errPrefix):]
+	for _, c := range classifierTable {
+		if strings.HasPrefix(rest, c.prefix) {
+			detail := strings.TrimSpace(rest[len(c.prefix):])
 			return fmt.Errorf("%w: %s", c.err, detail)
 		}
 	}

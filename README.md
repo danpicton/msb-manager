@@ -9,6 +9,7 @@ It shells out to the `msb` CLI (ADR-0002) — never embeds the SDK. It's statele
 ## What it does
 
 - Sandbox lifecycle (create / start / stop / rm / inspect / list)
+- **Exec**: run a short command inside a sandbox and get stdout/stderr/exit code back (request/response — no TTY; interactive sessions stay on the data plane via SSH)
 - Snapshot management (list / create / rm) and **derived sandboxes** (boot a fresh sandbox from a snapshot)
 - Named volume management (list / create / rm) with a one-running-sandbox-per-volume invariant
 - Fetch-only **logs** (NDJSON) and point-in-time **metrics**
@@ -66,8 +67,11 @@ Every route except `/healthz` and `/readyz` requires `Authorization: Bearer <tok
 | `POST`   | `/sandboxes/{name}/start` | `msb start` |
 | `POST`   | `/sandboxes/{name}/stop` | `msb stop` |
 | `DELETE` | `/sandboxes/{name}` | `msb rm` |
+| `POST`   | `/sandboxes/{name}/exec` | `msb exec <name> -- <argv...>` |
 | `GET`    | `/sandboxes/{name}/logs` | `msb logs <name> --json` |
 | `GET`    | `/sandboxes/{name}/metrics` | `msb metrics <name> --format json` |
+
+`POST /sandboxes/{name}/exec` takes `{command: [<argv...>]}` (no per-call env — prefix with `env KEY=VALUE` instead) and returns `{stdout, stderr, exit_code}`. The command exiting non-zero is HTTP **200** with the exit code in the body — the control plane succeeded at running it; HTTP errors are reserved for the control plane itself (404 unknown sandbox, 504 timeout). It is request/response, bounded by the msb command timeout: short commands, not interactive shells or long jobs. Captured output is capped at **32 MiB per stream** — past that the call fails with a 500 naming the cap (bound the command with `tail`/`head` instead), so one runaway `exec … -- yes` can't balloon the control plane's memory. Guest stderr is never mistaken for an msb error: only an `error: <category>:` line at the very start of stderr classifies as a control-plane failure.
 
 `GET /sandboxes/{name}/logs` accepts `tail`, `since`, `until`, `source`, `grep` query params, each mapping 1:1 to the `msb` flag of the same name. Response is `application/x-ndjson` — one JSON object per line, pass-through from `msb`.
 
@@ -138,7 +142,39 @@ SSH keys are installed via a `--script-raw` snippet executed after create with `
 
 ## Deployment
 
-msb-manager binds loopback only. **Caddy is the single external listener** — it terminates TLS (DNS-01 wildcard) and reverse-proxies to msb-manager on `127.0.0.1`. systemd runs the binary as a non-root user in the `kvm` group. See [`CONTEXT.md`](CONTEXT.md#resolved-decisions-v1) for the full deployment picture.
+msb-manager binds loopback only. **Caddy is the single external listener** — it terminates TLS (DNS-01 wildcard) and reverse-proxies to msb-manager on `127.0.0.1`. systemd runs the binary as a non-root user in the `kvm` group.
+
+[`docs/DEPLOY.md`](docs/DEPLOY.md) is the end-to-end walkthrough; the systemd unit, Caddyfile example, env-file template, and first-boot smoke test live in [`deploy/`](deploy/). Releases with prebuilt binaries are published from tags by `.github/workflows/release.yml`.
+
+## Client setup (msbctl)
+
+`msbctl` is the remote CLI — a thin, opaque HTTP client (ADR-0007). Install it on each client machine from a GitHub Release, or build from a clone (any platform):
+
+```bash
+go build -o msbctl ./cmd/msbctl
+```
+
+(`go install …@latest` is not supported — the module path is not the repo URL. Use a release binary or a clone.)
+
+Point it at your server with `~/.config/msbctl/config.yaml` (or under `$XDG_CONFIG_HOME`), permissions **0600** — it holds the bearer token:
+
+```yaml
+default_profile: home
+profiles:
+  home:
+    url: https://msb.your.domain        # your Caddy hostname
+    token: <the server's MSB_MANAGER_TOKEN>
+```
+
+Resolution precedence (highest wins): flags (`--server` / `--token` / `--profile`) > env (`MSB_MANAGER_URL` / `MSB_MANAGER_TOKEN` / `MSB_MANAGER_PROFILE`) > config-file profile > loopback default. Prefer the config file or env for the token — `--token` is world-readable in process listings, and msbctl warns when the token would travel cleartext to a non-loopback host.
+
+```bash
+msbctl ls
+msbctl create -f spec.yaml --set GITHUB_TOKEN=ghp_xxx   # ${VAR} interpolation (ADR-0008)
+msbctl exec my-sandbox -- df -h /workspace              # mirrors remote stdout/stderr/exit code
+msbctl logs my-sandbox --tail 20
+msbctl snapshot create nightly --from my-sandbox
+```
 
 ## Concurrency
 
@@ -155,4 +191,4 @@ TDD per [`CLAUDE.md`](CLAUDE.md). The high-value test seams are the pure layers:
 
 ## License
 
-Not specified yet.
+[MIT](LICENSE).

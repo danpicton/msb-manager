@@ -122,3 +122,27 @@ func TestNewVolumes_EmptyIsNonNilSlice(t *testing.T) {
 	}
 	sameJSON(t, got, []msb.Volume{})
 }
+
+// ExecResult has no adapter-JSON heritage (msb.ExecResult is assembled from
+// captured process output, not parsed msb JSON), so this pins the wire bytes
+// directly. exit_code must appear even when zero — its absence is not the
+// same statement as "the command succeeded".
+func TestNewExecResult_WireShape(t *testing.T) {
+	got, err := json.Marshal(NewExecResult(msb.ExecResult{Stdout: "hi\n", Stderr: "warn\n", ExitCode: 7}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"stdout":"hi\n","stderr":"warn\n","exit_code":7}`
+	if string(got) != want {
+		t.Errorf("wire shape:\n  got:  %s\n  want: %s", got, want)
+	}
+
+	got, err = json.Marshal(NewExecResult(msb.ExecResult{}))
+	if err != nil {
+		t.Fatalf("marshal zero value: %v", err)
+	}
+	want = `{"stdout":"","stderr":"","exit_code":0}`
+	if string(got) != want {
+		t.Errorf("zero-value wire shape:\n  got:  %s\n  want: %s", got, want)
+	}
+}

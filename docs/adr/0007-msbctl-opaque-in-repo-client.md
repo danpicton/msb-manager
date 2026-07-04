@@ -31,3 +31,11 @@ for no v1 benefit.
 - Target/auth resolution is a precedence chain: **flags > env >
   config-file profiles > defaults**. The bearer token is preferred via env or a
   `0600` config file, **not** `--token` (argv leak, cf. issue #7).
+- **Scoped exception to generic rendering (2026-07-04): `exec`.** The whole
+  point of `msbctl exec` is faithful process semantics — remote stdout on
+  local stdout, remote stderr on local stderr, the remote exit code as
+  msbctl's own (ssh-style). Generic pretty-printing cannot deliver that, so
+  `cmdExec` destructures the response's three fields (`stdout`, `stderr`,
+  `exit_code`). This is the *only* command that reads into a response body;
+  the boundary rule (no `internal/` imports) still holds, and any further
+  exception needs the same explicit recording here.

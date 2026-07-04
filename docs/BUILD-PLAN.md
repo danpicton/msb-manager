@@ -15,7 +15,7 @@ Single bearer token on everything except `GET /healthz`. Create accepts a declar
 | `POST` | `/sandboxes/{name}/start` | `msb start` | |
 | `POST` | `/sandboxes/{name}/stop` | `msb stop` | optional timeout/force |
 | `DELETE` | `/sandboxes/{name}` | `msb rm` | optional force; releases volume lock |
-| `POST` | `/sandboxes/{name}/exec` | `msb exec` | optional per-call env; returns stdout/stderr/exit |
+| `POST` | `/sandboxes/{name}/exec` | `msb exec` | argv-only body; returns stdout/stderr/exit_code; non-zero exit is 200 |
 | `GET` | `/sandboxes/{name}/logs` | `msb logs --json` | `tail`, `since`, `source` query params; fetch-only (no streaming) |
 | `GET` | `/sandboxes/{name}/metrics` | `msb metrics` | |
 

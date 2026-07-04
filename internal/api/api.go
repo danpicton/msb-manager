@@ -165,6 +165,26 @@ func NewMetrics(m msb.Metrics) Metrics {
 	}
 }
 
+// ExecResult is the response of POST /sandboxes/{name}/exec: the captured
+// output and exit code of a command that ran inside the sandbox. A non-zero
+// exit_code arrives with HTTP 200 — the command running and failing is a
+// successful control-plane operation. No field is omitempty: an explicit
+// exit_code of 0 and empty output strings are part of the statement.
+type ExecResult struct {
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int    `json:"exit_code"`
+}
+
+// NewExecResult maps an adapter ExecResult onto the DTO.
+func NewExecResult(r msb.ExecResult) ExecResult {
+	return ExecResult{
+		Stdout:   r.Stdout,
+		Stderr:   r.Stderr,
+		ExitCode: r.ExitCode,
+	}
+}
+
 // Volume is the list view of a named microsandbox volume (GET /volumes).
 type Volume struct {
 	Name      string `json:"name"`

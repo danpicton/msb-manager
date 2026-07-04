@@ -548,3 +548,93 @@ func TestCmd_MissingTokenFailsClearly(t *testing.T) {
 		t.Errorf("stderr = %q, want a clear missing-token message", errb.String())
 	}
 }
+
+// --- exec ---
+
+func TestCmd_Exec_PostsCommandAndMirrorsOutput(t *testing.T) {
+	rec := &recorder{respBody: `{"stdout":"hi\n","stderr":"warn\n","exit_code":0}`}
+	srv := rec.server()
+	defer srv.Close()
+
+	out, errb, code := runWith(t, srv.URL, nil, "exec", "web", "--", "sh", "-c", "echo hi")
+	if code != exitOK {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb)
+	}
+	if rec.method != http.MethodPost || rec.path != "/sandboxes/web/exec" {
+		t.Errorf("request = %s %s, want POST /sandboxes/web/exec", rec.method, rec.path)
+	}
+	if want := `{"command":["sh","-c","echo hi"]}`; rec.body != want {
+		t.Errorf("body = %s, want %s", rec.body, want)
+	}
+	// Remote streams land on the matching local streams, verbatim.
+	if out != "hi\n" {
+		t.Errorf("stdout = %q, want %q", out, "hi\n")
+	}
+	if !strings.Contains(errb, "warn\n") {
+		t.Errorf("stderr = %q, want it to carry the remote stderr", errb)
+	}
+}
+
+// The remote command's own flags must pass through verbatim after the `--`,
+// never be parsed as msbctl flags.
+func TestCmd_Exec_PassesRemoteFlagsVerbatim(t *testing.T) {
+	rec := &recorder{respBody: `{"stdout":"","stderr":"","exit_code":0}`}
+	srv := rec.server()
+	defer srv.Close()
+
+	_, errb, code := runWith(t, srv.URL, nil, "exec", "web", "--", "ls", "-la", "--color=never")
+	if code != exitOK {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb)
+	}
+	if want := `{"command":["ls","-la","--color=never"]}`; rec.body != want {
+		t.Errorf("body = %s, want %s", rec.body, want)
+	}
+}
+
+// exec mirrors the remote command's exit code as msbctl's own (ssh-style).
+func TestCmd_Exec_MirrorsRemoteExitCode(t *testing.T) {
+	rec := &recorder{respBody: `{"stdout":"","stderr":"no such file\n","exit_code":2}`}
+	srv := rec.server()
+	defer srv.Close()
+
+	_, _, code := runWith(t, srv.URL, nil, "exec", "web", "--", "ls", "/nope")
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 (the remote exit code)", code)
+	}
+}
+
+func TestCmd_Exec_RequiresSeparatorAndName(t *testing.T) {
+	srv := (&recorder{}).server()
+	defer srv.Close()
+
+	for name, args := range map[string][]string{
+		"no separator":  {"exec", "web", "ls"},
+		"no name":       {"exec", "--", "ls"},
+		"two names":     {"exec", "web", "extra", "--", "ls"},
+		"empty command": {"exec", "web", "--"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, errb, code := runWith(t, srv.URL, nil, args...)
+			if code != exitGeneric {
+				t.Errorf("exit = %d, want %d", code, exitGeneric)
+			}
+			if !strings.Contains(errb, "usage: exec") {
+				t.Errorf("stderr = %q, want a usage message", errb)
+			}
+		})
+	}
+}
+
+func TestCmd_Exec_ServerErrorMapsToExitCode(t *testing.T) {
+	rec := &recorder{status: http.StatusNotFound, respBody: `{"error":"sandbox not found"}`}
+	srv := rec.server()
+	defer srv.Close()
+
+	_, errb, code := runWith(t, srv.URL, nil, "exec", "ghost", "--", "ls")
+	if code != exitClientError {
+		t.Errorf("exit = %d, want %d", code, exitClientError)
+	}
+	if !strings.Contains(errb, "sandbox not found") {
+		t.Errorf("stderr = %q, want the server error surfaced", errb)
+	}
+}

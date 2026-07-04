@@ -1,0 +1,57 @@
+# msb-manager systemd unit — see docs/DEPLOY.md for the full walkthrough.
+#
+# Expects:
+#   - the binary at /usr/local/bin/msb-manager
+#   - config at /etc/msb-manager/env (see deploy/msb-manager.env.example)
+#   - a system user `msb-manager` in the `kvm` group, home /var/lib/msb-manager
+#     (the msb CLI keeps its state under the invoking user's home)
+
+[Unit]
+Description=msb-manager (microsandbox control plane)
+Documentation=https://github.com/danpicton/msb-manager
+After=network.target
+# If the microsandbox supervisor runs as its own unit on this host, order
+# after it so /readyz doesn't flap at boot:
+#After=microsandbox.service
+#Wants=microsandbox.service
+
+[Service]
+Type=simple
+User=msb-manager
+Group=msb-manager
+# /dev/kvm access for the msb CLI (CLAUDE.md invariant: non-root, kvm group).
+SupplementaryGroups=kvm
+
+# Holds MSB_MANAGER_TOKEN — keep it root:root 0600.
+EnvironmentFile=/etc/msb-manager/env
+
+ExecStart=/usr/local/bin/msb-manager
+Restart=on-failure
+RestartSec=2s
+
+# Startup fails closed: the server retries the volume-lock reconcile until
+# msb answers (issue #20) before it listens, so allow a generous start.
+TimeoutStartSec=5min
+
+# Owns /var/lib/msb-manager (MSB_MANAGER_DATA_DIR default) with correct perms.
+StateDirectory=msb-manager
+
+# --- Hardening ---
+# The service shells out to msb, which needs /dev/kvm and writes its own
+# state under the service user's home. Do NOT add PrivateDevices=true —
+# it would hide /dev/kvm.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+# Home is /var/lib/msb-manager, outside /home, so ProtectHome is safe.
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# msb-manager binds loopback; msb needs outbound sockets for image pulls.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -210,6 +210,11 @@ func statusForAdapterError(op string, err error) (int, string) {
 		// A wedged msb call hit its bound (issue #4); surface it as an upstream
 		// timeout, not a generic 500.
 		return http.StatusGatewayTimeout, "msb command timed out"
+	case errors.Is(err, msb.ErrOutputTooLarge):
+		// The runner's capture cap tripped (PR #34 review, finding 2). Name the
+		// cause so the caller knows to bound the command's output (tail/head)
+		// rather than retrying a generic failure.
+		return http.StatusInternalServerError, "command output exceeded the capture limit"
 	default:
 		return http.StatusInternalServerError, op + " failed"
 	}

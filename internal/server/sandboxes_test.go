@@ -31,6 +31,8 @@ type fakeMsb struct {
 	startErr          error
 	stopErr           error
 	rmErr             error
+	execOut           msb.ExecResult
+	execErr           error
 	volumeListOut     []msb.Volume
 	volumeListErr     error
 	volumeCreateErr   error
@@ -49,6 +51,8 @@ type fakeMsb struct {
 	gotStartName      string
 	gotStopName       string
 	gotRmName         string
+	gotExecName       string
+	gotExecArgv       []string
 	gotVolumeCreate   [2]string // name, size (last call)
 	volumeCreateCalls int
 	volumeCreateNames []string
@@ -86,6 +90,11 @@ func (f *fakeMsb) Stop(_ context.Context, name string) error {
 func (f *fakeMsb) Rm(_ context.Context, name string) error {
 	f.gotRmName = name
 	return f.rmErr
+}
+func (f *fakeMsb) Exec(_ context.Context, name string, argv []string) (msb.ExecResult, error) {
+	f.gotExecName = name
+	f.gotExecArgv = argv
+	return f.execOut, f.execErr
 }
 func (f *fakeMsb) Logs(_ context.Context, name string, opts msb.LogsOpts) ([]byte, error) {
 	f.gotLogsName = name
