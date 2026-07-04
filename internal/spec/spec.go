@@ -10,7 +10,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -134,6 +136,16 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("spec: volume.mount must be an absolute path, got %q", s.Volume.Mount)
 		}
 	}
+	// Env keys are emitted as `-e <key>=<value>` — the key is the leading
+	// bytes of an argv token, so it gets the issue-#3 flag-shape guard
+	// (issue #23), same rationale as snapshot label keys. Values are glued
+	// after `<key>=` into the same arg so cannot become a flag. Sorted so a
+	// multi-key error is deterministic.
+	for _, k := range slices.Sorted(maps.Keys(s.Env)) {
+		if !msb.ValidEnvKey(k) {
+			return fmt.Errorf("spec: env key %q is not a valid environment variable name (letter or '_' start, [A-Za-z0-9_], max 128)", k)
+		}
+	}
 	for i, p := range s.Ports {
 		if p.Host < 1 || p.Host > 65535 {
 			return fmt.Errorf("spec: ports[%d].host out of range (1-65535), got %d", i, p.Host)
@@ -161,6 +173,12 @@ func (s Spec) Validate() error {
 		}
 		if sec.Host == "" {
 			return fmt.Errorf("spec: secrets[%d].host is required", i)
+		}
+		// The key leads the assembled `--secret KEY=VALUE@HOST` argv token; a
+		// leading '-' would make the whole token flag-shaped to msb's parser
+		// (issues #3, #23).
+		if strings.HasPrefix(sec.Key, "-") {
+			return fmt.Errorf("spec: secrets[%d].key must not start with '-'", i)
 		}
 		// '=' / '@' inside key or '@' inside host would make the assembled
 		// "KEY=VALUE@HOST" string unparseable by msb. Refuse them here so we
