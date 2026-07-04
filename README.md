@@ -138,7 +138,38 @@ SSH keys are installed via a `--script-raw` snippet executed after create with `
 
 ## Deployment
 
-msb-manager binds loopback only. **Caddy is the single external listener** — it terminates TLS (DNS-01 wildcard) and reverse-proxies to msb-manager on `127.0.0.1`. systemd runs the binary as a non-root user in the `kvm` group. See [`CONTEXT.md`](CONTEXT.md#resolved-decisions-v1) for the full deployment picture.
+msb-manager binds loopback only. **Caddy is the single external listener** — it terminates TLS (DNS-01 wildcard) and reverse-proxies to msb-manager on `127.0.0.1`. systemd runs the binary as a non-root user in the `kvm` group.
+
+[`docs/DEPLOY.md`](docs/DEPLOY.md) is the end-to-end walkthrough; the systemd unit, Caddyfile example, env-file template, and first-boot smoke test live in [`deploy/`](deploy/). Releases with prebuilt binaries are published from tags by `.github/workflows/release.yml`.
+
+## Client setup (msbctl)
+
+`msbctl` is the remote CLI — a thin, opaque HTTP client (ADR-0007). Install it on each client machine from a GitHub Release, or build from a clone (any platform):
+
+```bash
+go build -o msbctl ./cmd/msbctl
+```
+
+(`go install …@latest` is not supported — the module path is not the repo URL. Use a release binary or a clone.)
+
+Point it at your server with `~/.config/msbctl/config.yaml` (or under `$XDG_CONFIG_HOME`), permissions **0600** — it holds the bearer token:
+
+```yaml
+default_profile: home
+profiles:
+  home:
+    url: https://msb.your.domain        # your Caddy hostname
+    token: <the server's MSB_MANAGER_TOKEN>
+```
+
+Resolution precedence (highest wins): flags (`--server` / `--token` / `--profile`) > env (`MSB_MANAGER_URL` / `MSB_MANAGER_TOKEN` / `MSB_MANAGER_PROFILE`) > config-file profile > loopback default. Prefer the config file or env for the token — `--token` is world-readable in process listings, and msbctl warns when the token would travel cleartext to a non-loopback host.
+
+```bash
+msbctl ls
+msbctl create -f spec.yaml --set GITHUB_TOKEN=ghp_xxx   # ${VAR} interpolation (ADR-0008)
+msbctl logs my-sandbox --tail 20
+msbctl snapshot create nightly --from my-sandbox
+```
 
 ## Concurrency
 
@@ -155,4 +186,4 @@ TDD per [`CLAUDE.md`](CLAUDE.md). The high-value test seams are the pure layers:
 
 ## License
 
-Not specified yet.
+[MIT](LICENSE).
