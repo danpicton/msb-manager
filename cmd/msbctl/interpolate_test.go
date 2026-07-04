@@ -15,6 +15,17 @@ func lookupFrom(m map[string]string) func(string) (string, bool) {
 	}
 }
 
+// An empty spec would otherwise round-trip through the YAML node tree as
+// "null\n" and be POSTed silently (issue #10); it must fail loudly here,
+// before any HTTP call.
+func TestInterpolate_EmptyInputErrors(t *testing.T) {
+	for _, raw := range [][]byte{nil, {}, []byte("  \n\t")} {
+		if _, err := interpolate(raw, lookupFrom(nil)); err == nil {
+			t.Errorf("interpolate(%q) = nil error, want \"spec is empty\"", raw)
+		}
+	}
+}
+
 func TestInterpolate_SubstitutesScalarValue(t *testing.T) {
 	raw := []byte("name: demo\nvalue: ${TOKEN}\n")
 	out, err := interpolate(raw, lookupFrom(map[string]string{"TOKEN": "abc123"}))

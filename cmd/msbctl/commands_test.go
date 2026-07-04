@@ -258,6 +258,25 @@ func TestCmd_Create_UndefinedVariableFailsWithoutPosting(t *testing.T) {
 	}
 }
 
+// An empty spec (empty file or empty stdin) must fail at the client with an
+// actionable error, not POST "null" to the server (issue #10).
+func TestCmd_Create_EmptySpecFailsWithoutPosting(t *testing.T) {
+	rec := &recorder{status: http.StatusCreated}
+	srv := rec.server()
+	defer srv.Close()
+
+	_, errOut, code := runWith(t, srv.URL, strings.NewReader(""), "create", "-f", "-")
+	if code == exitOK {
+		t.Fatal("empty spec should fail the command")
+	}
+	if rec.method != "" {
+		t.Error("nothing should be POSTed for an empty spec")
+	}
+	if !strings.Contains(errOut, "empty") {
+		t.Errorf("stderr = %q, want an error naming the empty spec", errOut)
+	}
+}
+
 func TestCmd_Create_RequiresFileFlag(t *testing.T) {
 	rec := &recorder{}
 	srv := rec.server()
