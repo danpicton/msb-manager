@@ -67,6 +67,12 @@ fi
 step "list sandboxes"
 "$MSBCTL" ls
 
+step "exec against a missing sandbox is a 404, not a command result"
+# Proves the anchored stderr classifier still recognises a real msb
+# 'error: sandbox not found:' line (PR #34 review, finding 1).
+expect_refused "exec in absent sandbox smoke-no-such-sandbox" \
+  "$MSBCTL" exec smoke-no-such-sandbox -- true
+
 step "create volume $VOL"
 "$MSBCTL" volume create "$VOL" --size 1G
 "$MSBCTL" volume ls

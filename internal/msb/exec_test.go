@@ -84,3 +84,48 @@ func TestExecOutcome_SpawnFailureIsError(t *testing.T) {
 		t.Error("want an error for a spawn failure, got success")
 	}
 }
+
+// --- guest-stderr spoof resistance (PR #34 review, finding 1) ---
+
+// Exec's stderr is mostly guest-authored, so a category substring appearing
+// mid-output (a grep result, a traceback, a log line) must NOT be mistaken
+// for msb's own error. Only stderr that *starts with* msb's `error: ` line
+// classifies — a genuine msb failure happens before the guest produces any
+// output, so it always sits at position zero.
+func TestExecOutcome_GuestStderrCannotSpoofClassification(t *testing.T) {
+	for name, stderr := range map[string]string{
+		"substring mid-line":  "grep: sandbox not found: no matches in app.log\n",
+		"msb-shaped mid-body": "step 1 ok\nerror: sandbox not found: web\n",
+		"volume category":     "warn: volume not found: cache (ignored)\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, err := execOutcome(nil, []byte(stderr), exitCodeError{3})
+			if err != nil {
+				t.Fatalf("guest output was misclassified as an msb error: %v", err)
+			}
+			if res.ExitCode != 3 || res.Stderr != stderr {
+				t.Errorf("result = %+v, want exit 3 with stderr passed through", res)
+			}
+		})
+	}
+}
+
+// Leading whitespace must not defeat the anchor for a genuine msb error.
+func TestExecOutcome_AnchoredMsbErrorStillClassifies(t *testing.T) {
+	_, err := execOutcome(nil, []byte("\nerror: sandbox not found: web\n"), exitCodeError{1})
+	if !errors.Is(err, ErrSandboxNotFound) {
+		t.Errorf("err = %v, want ErrSandboxNotFound", err)
+	}
+}
+
+// --- output cap (PR #34 review, finding 2) ---
+
+// An over-cap capture is an adapter failure (500), never attributed to the
+// guest command as a truncated-but-successful result.
+func TestExecOutcome_OutputTooLargeStaysError(t *testing.T) {
+	wrapped := fmt.Errorf("%w: stdout passed 1024 bytes", ErrOutputTooLarge)
+	_, err := execOutcome([]byte("partial"), nil, wrapped)
+	if !errors.Is(err, ErrOutputTooLarge) {
+		t.Errorf("err = %v, want ErrOutputTooLarge", err)
+	}
+}

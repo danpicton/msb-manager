@@ -104,9 +104,10 @@ func wrapRunErr(stderr []byte, err error) error {
 	if err == nil {
 		return nil
 	}
-	// A timeout is already a typed sentinel; don't let stderr classification
-	// (usually empty on a kill) shadow the 504 mapping.
-	if errors.Is(err, ErrTimeout) {
+	// Timeout and over-cap are already typed sentinels; don't let stderr
+	// classification (empty on a kill, arbitrary on an overflow) shadow their
+	// status mapping.
+	if errors.Is(err, ErrTimeout) || errors.Is(err, ErrOutputTooLarge) {
 		return err
 	}
 	if classified := classifyError(string(stderr)); classified != nil {
@@ -392,10 +393,13 @@ func execOutcome(stdout, stderr []byte, err error) (ExecResult, error) {
 	if err == nil {
 		return ExecResult{Stdout: string(stdout), Stderr: string(stderr)}, nil
 	}
-	if errors.Is(err, ErrTimeout) {
+	if errors.Is(err, ErrTimeout) || errors.Is(err, ErrOutputTooLarge) {
 		return ExecResult{}, err
 	}
-	if classified := classifyError(string(stderr)); classified != nil {
+	// Anchored, not the general classifier: exec's stderr is mostly the
+	// guest command's own output, and a category substring mid-stream must
+	// not be mistaken for an msb failure (PR #34 review, finding 1).
+	if classified := classifyErrorAnchored(string(stderr)); classified != nil {
 		return ExecResult{}, classified
 	}
 	// *exec.ExitError satisfies this; matched as an interface so tests can

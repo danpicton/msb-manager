@@ -131,3 +131,19 @@ func TestExecSandbox_OversizeBodyIs413(t *testing.T) {
 		t.Errorf("status = %d, want 413", rec.Code)
 	}
 }
+
+// An over-cap capture surfaces as a clear 500 telling the caller what
+// happened, not a generic "exec failed" (PR #34 review, finding 2).
+func TestExecSandbox_OutputTooLargeIs500WithClearMessage(t *testing.T) {
+	srv := New(Config{Token: testToken}, &fakeMsb{execErr: msb.ErrOutputTooLarge})
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, authedJSON(http.MethodPost, "/sandboxes/web/exec", `{"command":["yes"]}`))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "output exceeded") {
+		t.Errorf("body = %s, want a message naming the output cap", rec.Body.String())
+	}
+}
