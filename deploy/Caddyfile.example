@@ -1,0 +1,25 @@
+# Caddy front door for msb-manager — the ONLY externally reachable listener.
+# msb-manager binds 127.0.0.1:8080; Caddy terminates TLS and reverse-proxies.
+#
+# Replace the hostnames with your own. TLS via ACME DNS-01 (wildcard-friendly,
+# no inbound :80 required) needs a Caddy build that includes your DNS provider
+# module, e.g.:
+#   xcaddy build --with github.com/caddy-dns/cloudflare
+# and the provider credential in Caddy's environment.
+
+msb.home.picton.uk, msb.meshnet.picton.uk {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+
+	reverse_proxy 127.0.0.1:8080 {
+		# Optional active probe: takes the backend out of rotation (502 from
+		# Caddy instead of a hang) while the msb supervisor is unreachable.
+		health_uri /readyz
+		health_interval 10s
+	}
+}
+
+# Data-plane routing (*.msb.… hostnames → VM host ports) is a separate
+# companion system — see docs/vm-access-routing.md — and deliberately NOT
+# part of this file.
