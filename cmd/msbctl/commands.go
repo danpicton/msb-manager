@@ -115,6 +115,13 @@ func (env *runEnv) doStatusAction(ctx context.Context, method, path string, body
 // It allows flags and positionals to be interspersed (e.g. `logs web --tail 5`
 // as well as `logs --tail 5 web`), which the stdlib flag package does not do on
 // its own — it stops at the first non-flag token. Usage/errors go to stderr.
+//
+// A flag repeated across segments is last-write-wins (`logs --tail 5 web
+// --tail 20` delivers tail=20), matching stdlib flag's behaviour within a
+// single segment. This is deliberate, not an oversight (issue #12): erroring
+// on repeats would need an exemption mechanism for the intentionally
+// repeatable flags (--label, --set), and stdlib flag offers no clean way to
+// tell a re-set apart from a first set without wrapping every Value.
 func (env *runEnv) parseFlags(fs *flag.FlagSet, args []string) ([]string, bool) {
 	fs.SetOutput(env.stderr)
 	var positionals []string
