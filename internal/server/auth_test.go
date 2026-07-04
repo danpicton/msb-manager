@@ -50,6 +50,19 @@ func TestCorrectTokenClearsAuth(t *testing.T) {
 	}
 }
 
+// A wrong token of a different length must also 401. The digest compare keeps
+// the comparison constant-time regardless of length (issue #24) — that part is
+// by construction; this pins the behavioural half.
+func TestWrongLengthTokenReturns401(t *testing.T) {
+	srv := New(Config{Token: testToken}, &fakeMsb{})
+
+	rec := doReq(srv, http.MethodGet, "/sandboxes", "Bearer x")
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /sandboxes with wrong-length token: got %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
 func TestHealthzNeedsNoToken(t *testing.T) {
 	srv := New(Config{Token: testToken}, &fakeMsb{})
 
