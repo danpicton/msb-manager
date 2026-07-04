@@ -44,7 +44,9 @@ func interpolate(raw []byte, lookup func(string) (string, bool)) ([]byte, error)
 	walk = func(n *yaml.Node) {
 		if n.Kind == yaml.ScalarNode && placeholderRE.MatchString(n.Value) {
 			n.Value = placeholderRE.ReplaceAllStringFunc(n.Value, func(m string) string {
-				name := placeholderRE.FindStringSubmatch(m)[1]
+				// m is the full "${NAME}" match, so the name is just the
+				// middle — no need to run the regex engine a second time.
+				name := m[2 : len(m)-1]
 				v, ok := lookup(name)
 				if !ok {
 					missing[name] = struct{}{}
