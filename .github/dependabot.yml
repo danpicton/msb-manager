@@ -5,3 +5,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  # Surface patched releases of Go module dependencies (issue #29).
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
