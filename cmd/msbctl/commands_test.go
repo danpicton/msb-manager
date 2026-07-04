@@ -258,6 +258,42 @@ func TestCmd_Create_UndefinedVariableFailsWithoutPosting(t *testing.T) {
 	}
 }
 
+// A flag repeated on both sides of a positional is last-write-wins — the
+// documented behaviour of parseFlags's re-parse loop (issue #12). This test
+// pins the contract so a future change to it is a conscious one.
+func TestCmd_Logs_DuplicateFlagIsLastWriteWins(t *testing.T) {
+	rec := &recorder{respBody: "{}\n"}
+	srv := rec.server()
+	defer srv.Close()
+
+	_, _, code := runWith(t, srv.URL, nil, "logs", "--tail", "5", "web", "--tail", "20")
+	if code != exitOK {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(rec.rawQuery, "tail=20") || strings.Contains(rec.rawQuery, "tail=5") {
+		t.Errorf("query = %q, want the later --tail 20 to win", rec.rawQuery)
+	}
+}
+
+// An empty spec (empty file or empty stdin) must fail at the client with an
+// actionable error, not POST "null" to the server (issue #10).
+func TestCmd_Create_EmptySpecFailsWithoutPosting(t *testing.T) {
+	rec := &recorder{status: http.StatusCreated}
+	srv := rec.server()
+	defer srv.Close()
+
+	_, errOut, code := runWith(t, srv.URL, strings.NewReader(""), "create", "-f", "-")
+	if code == exitOK {
+		t.Fatal("empty spec should fail the command")
+	}
+	if rec.method != "" {
+		t.Error("nothing should be POSTed for an empty spec")
+	}
+	if !strings.Contains(errOut, "empty") {
+		t.Errorf("stderr = %q, want an error naming the empty spec", errOut)
+	}
+}
+
 func TestCmd_Create_RequiresFileFlag(t *testing.T) {
 	rec := &recorder{}
 	srv := rec.server()

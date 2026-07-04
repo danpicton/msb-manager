@@ -3,10 +3,26 @@ package server
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"msb-manager/internal/api"
 	"msb-manager/internal/msb"
 )
+
+// logsSources is msb's documented --source vocabulary (see msb.LogsOpts); a
+// comma-separated combination is accepted, matching the flag's list form.
+var logsSources = map[string]bool{
+	"stdout": true, "stderr": true, "output": true, "system": true, "all": true,
+}
+
+func validLogsSource(s string) bool {
+	for _, part := range strings.Split(s, ",") {
+		if !logsSources[part] {
+			return false
+		}
+	}
+	return true
+}
 
 // handleLogs proxies `msb logs <name> --json` and returns the raw NDJSON
 // stream. Query params (tail, since, until, source, grep) map 1:1 to msb's
@@ -24,6 +40,29 @@ func handleLogs(client MsbClient) http.HandlerFunc {
 			Until:  q.Get("until"),
 			Source: q.Get("source"),
 			Grep:   q.Get("grep"),
+		}
+		// These params are forwarded verbatim as msb argv flag values. Each is
+		// a single argv token so cannot inject further args, but a leading '-'
+		// reads as a flag to msb's parser — reject flag-shaped values with a
+		// 400 before any subprocess runs, matching the identifier guard the
+		// other handlers apply (issues #3, #23).
+		for _, p := range []struct{ name, value string }{
+			{"since", opts.Since},
+			{"until", opts.Until},
+			{"grep", opts.Grep},
+		} {
+			if strings.HasPrefix(p.value, "-") {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": p.name + " must not start with '-'",
+				})
+				return
+			}
+		}
+		if opts.Source != "" && !validLogsSource(opts.Source) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "source must be a comma-separated subset of stdout,stderr,output,system,all",
+			})
+			return
 		}
 		if tail := q.Get("tail"); tail != "" {
 			n, err := strconv.Atoi(tail)

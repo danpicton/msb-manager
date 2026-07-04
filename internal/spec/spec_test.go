@@ -294,6 +294,50 @@ func TestValidate_RejectsMalformedVolumeName(t *testing.T) {
 	}
 }
 
+// Env keys become the leading bytes of `-e KEY=VALUE` argv tokens, so they
+// need the issue-#3 flag-shape guard (issue #23): a key like "--force" would
+// reach msb as a flag; an empty key or one containing '=' shifts msb's
+// KEY/VALUE split.
+func TestValidate_RejectsMalformedEnvKeys(t *testing.T) {
+	cases := []struct {
+		label string
+		key   string
+	}{
+		{"flag-shaped", "--force"},
+		{"leading dash", "-k"},
+		{"empty", ""},
+		{"contains equals", "A=B"},
+		{"whitespace", "A B"},
+		{"control char", "A\x01"},
+	}
+	for _, c := range cases {
+		s := Spec{Name: "web", Image: "alpine:3", Env: map[string]string{c.key: "v"}}
+		if err := s.Validate(); err == nil {
+			t.Errorf("%s env key %q: Validate() = nil, want error", c.label, c.key)
+		}
+	}
+}
+
+func TestValidate_AcceptsWellFormedEnvKeys(t *testing.T) {
+	s := Spec{Name: "web", Image: "alpine:3", Env: map[string]string{
+		"HTTP_PROXY": "x", "_private": "y", "K9": "z",
+	}}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
+// Secret keys are validated against '='/'@' but a leading '-' is the same
+// flag-shape hazard: `--secret -KEY=V@H` is flag-shaped to msb (issue #23).
+func TestValidate_RejectsSecretKeyLeadingDash(t *testing.T) {
+	s := Spec{Name: "web", Image: "alpine:3", Secrets: []Secret{
+		{Key: "-KEY", Value: "v", Host: "example.com"},
+	}}
+	if err := s.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error for secret key with leading '-'")
+	}
+}
+
 func TestParse_RejectsUnknownFields(t *testing.T) {
 	body := []byte(`
 name: voltest

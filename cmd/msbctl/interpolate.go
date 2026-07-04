@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -27,6 +29,11 @@ var placeholderRE = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 // This is not schema parsing (ADR-0007): the client walks a generic node tree
 // and knows nothing of the spec's fields.
 func interpolate(raw []byte, lookup func(string) (string, bool)) ([]byte, error) {
+	// An empty document would survive the round trip below as "null\n" and be
+	// POSTed to the server (issue #10) — fail loudly at the source instead.
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, errors.New("spec is empty")
+	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse spec for interpolation: %w", err)
@@ -37,7 +44,9 @@ func interpolate(raw []byte, lookup func(string) (string, bool)) ([]byte, error)
 	walk = func(n *yaml.Node) {
 		if n.Kind == yaml.ScalarNode && placeholderRE.MatchString(n.Value) {
 			n.Value = placeholderRE.ReplaceAllStringFunc(n.Value, func(m string) string {
-				name := placeholderRE.FindStringSubmatch(m)[1]
+				// m is the full "${NAME}" match, so the name is just the
+				// middle — no need to run the regex engine a second time.
+				name := m[2 : len(m)-1]
 				v, ok := lookup(name)
 				if !ok {
 					missing[name] = struct{}{}

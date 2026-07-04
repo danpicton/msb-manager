@@ -140,6 +140,30 @@ func TestResolve_PartialProfileFallsBackToDefaults(t *testing.T) {
 	}
 }
 
+// The warn decision for issue #25: cleartext http to a non-loopback host means
+// the bearer token crosses the network unencrypted. Loopback http (the default
+// deployment) and any https stay silent.
+func TestShouldWarnCleartext(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{defaultURL, false}, // built-in loopback default
+		{"http://localhost:8080", false},
+		{"http://[::1]:8080", false},
+		{"http://127.0.0.2:8080", false}, // all of 127.0.0.0/8 is loopback
+		{"http://192.168.1.20:8080", true},
+		{"http://lenovo.lan:8080", true},
+		{"https://lenovo.lan", false},
+		{"https://192.168.1.20:8443", false},
+	}
+	for _, c := range cases {
+		if got := shouldWarnCleartext(c.url); got != c.want {
+			t.Errorf("shouldWarnCleartext(%q) = %v, want %v", c.url, got, c.want)
+		}
+	}
+}
+
 // --- config file loading ---
 
 func TestLoadConfig_MissingFileIsNotAnError(t *testing.T) {

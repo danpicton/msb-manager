@@ -29,6 +29,13 @@ var (
 	// suffix (G, GB, GiB, M, MiB, …). Starting with a digit inherently forbids
 	// a leading '-'; msb owns the exact unit grammar and rejects bad units.
 	sizeRe = regexp.MustCompile(`^[0-9]+[A-Za-z]{0,3}$`)
+
+	// envKeyRe is the POSIX-style environment variable name shape. Env keys
+	// are the leading bytes of `-e KEY=VALUE` argv tokens, so beyond being a
+	// sane env name this shape is also the flag-injection guard: no leading
+	// '-', no '=' (which would shift msb's KEY/VALUE split), no whitespace or
+	// control characters.
+	envKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 )
 
 // ValidName reports whether s is a well-formed sandbox/volume/snapshot
@@ -49,4 +56,11 @@ func ValidImage(s string) bool {
 // optional short unit suffix and, crucially, no leading '-'.
 func ValidSize(s string) bool {
 	return sizeRe.MatchString(s)
+}
+
+// ValidEnvKey reports whether s is a well-formed environment variable name:
+// non-empty, letter or '_' first, then letters/digits/underscores, at most
+// 128 characters.
+func ValidEnvKey(s string) bool {
+	return envKeyRe.MatchString(s)
 }

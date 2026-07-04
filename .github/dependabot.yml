@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Keep SHA-pinned actions in .github/workflows fresh (issue #28).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # Surface patched releases of Go module dependencies (issue #29).
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
