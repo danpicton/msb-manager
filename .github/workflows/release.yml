@@ -1,0 +1,65 @@
+name: Release
+
+# Tag-driven binary releases: push a v* tag and this publishes cross-compiled
+# msbctl (client machines) and msb-manager (the Linux server) archives plus a
+# SHA256SUMS file. Distribution is via these artifacts — the module path is
+# not a repo URL, so `go install …@latest` is not a supported install path.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: Test
+        # Cheap insurance: never publish binaries from a commit that fails the
+        # suite, even if CI hasn't run on the tagged commit for some reason.
+        run: go test ./...
+      - name: Cross-compile
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          version="$GITHUB_REF_NAME"
+
+          build() {
+            cmd=$1 os=$2 arch=$3
+            name="${cmd}_${version}_${os}_${arch}"
+            bin="$cmd"
+            if [ "$os" = windows ]; then bin="$cmd.exe"; fi
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags='-s -w' -o "dist/$name/$bin" "./cmd/$cmd"
+            if [ "$os" = windows ]; then
+              (cd "dist/$name" && zip -q "../$name.zip" "$bin")
+            else
+              tar -czf "dist/$name.tar.gz" -C "dist/$name" "$bin"
+            fi
+            rm -r "dist/$name"
+          }
+
+          # msbctl runs on client machines; msb-manager on the (Linux) server.
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            build msbctl "${t%/*}" "${t#*/}"
+          done
+          for t in linux/amd64 linux/arm64; do
+            build msb-manager "${t%/*}" "${t#*/}"
+          done
+      - name: Checksums
+        run: cd dist && sha256sum -- * > SHA256SUMS
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
