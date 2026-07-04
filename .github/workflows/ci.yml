@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - go.mod
+      - go.sum
+      - .github/workflows/ci.yml
+  pull_request:
+    # creation (opened), update (synchronize), and reopen.
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**.go'
+      - go.mod
+      - go.sum
+      - .github/workflows/ci.yml
+
+permissions:
+  contents: read
+
+# Supersede in-flight runs for a PR when it's pushed again; never cancel a
+# run for a merge to main (each main commit gets its own confirmed signal).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          # Track go.mod so the toolchain matches what the code targets; the
+          # action caches modules and the build cache keyed on go.sum.
+          go-version-file: go.mod
+      - name: Verify modules are tidy
+        # A drifted go.mod/go.sum is a common, silent source of "works on my
+        # machine" breakage. Cheap to check, catches it at the door.
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: go vet
+        run: go vet ./...
+      - name: Build
+        run: go build ./...
+      - name: Test (race detector + coverage)
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Coverage summary
+        # Surface the total in the step log; no external upload service.
+        run: go tool cover -func=coverage.out | tail -n 1
