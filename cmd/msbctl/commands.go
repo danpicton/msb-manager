@@ -454,14 +454,18 @@ func cmdSnapshot(ctx context.Context, env *runEnv, args []string) int {
 // volumeCreateBody and snapshotCreateBody assemble the small JSON request bodies
 // for the volume/snapshot create endpoints. These are request *inputs*, not the
 // sandbox spec schema or a response DTO (ADR-0007's opacity rule is about those);
-// the two-field bodies are part of the wire contract for these endpoints.
+// the bodies are part of the wire contract for these endpoints. Both marshal
+// anonymous structs rather than hand-building strings: string assembly makes
+// adding a field an ordering hazard, and json.Marshal owns the escaping
+// (issue #16).
 func volumeCreateBody(name, size string) string {
-	return fmt.Sprintf(`{"name":%s,"size":%s}`, jsonString(name), jsonString(size))
+	b, _ := json.Marshal(struct {
+		Name string `json:"name"`
+		Size string `json:"size"`
+	}{Name: name, Size: size})
+	return string(b)
 }
 
-// snapshotCreateBody marshals via an anonymous struct rather than a hand-built
-// fmt.Sprintf: the nested `labels` object makes string assembly an ordering
-// hazard (issue #16), and json.Marshal handles escaping and omitempty for us.
 func snapshotCreateBody(from, name string, force bool, labels map[string]string) string {
 	b, _ := json.Marshal(struct {
 		From   string            `json:"from"`
@@ -469,12 +473,5 @@ func snapshotCreateBody(from, name string, force bool, labels map[string]string)
 		Force  bool              `json:"force"`
 		Labels map[string]string `json:"labels,omitempty"`
 	}{From: from, Name: name, Force: force, Labels: labels})
-	return string(b)
-}
-
-// jsonString quotes a string as a JSON literal so a value with a quote or
-// backslash cannot break the small hand-built request bodies above.
-func jsonString(s string) string {
-	b, _ := json.Marshal(s)
 	return string(b)
 }
