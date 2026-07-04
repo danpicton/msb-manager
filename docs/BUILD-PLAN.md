@@ -15,6 +15,7 @@ Single bearer token on everything except `GET /healthz`. Create accepts a declar
 | `POST` | `/sandboxes/{name}/start` | `msb start` | |
 | `POST` | `/sandboxes/{name}/stop` | `msb stop` | optional timeout/force |
 | `DELETE` | `/sandboxes/{name}` | `msb rm` | optional force; releases volume lock |
+| `POST` | `/sandboxes/{name}/exec` | `msb exec` | argv-only body; returns stdout/stderr/exit_code; non-zero exit is 200 |
 | `GET` | `/sandboxes/{name}/logs` | `msb logs --json` | `tail`, `since`, `source` query params; fetch-only (no streaming) |
 | `GET` | `/sandboxes/{name}/metrics` | `msb metrics` | |
 
@@ -44,4 +45,4 @@ Single bearer token on everything except `GET /healthz`. Create accepts a declar
 
 ## Out of scope for v1 (see CONTEXT.md "Deferred")
 
-Lineage *view* endpoint, per-sandbox auth scopes, stateful project registry, log streaming/aggregation, optional host-folder mount, and an **exec endpoint** (`POST /sandboxes/{name}/exec`) — the data plane is reached directly (SSH into the VM), so no client need materialised; the adapter already wraps `msb exec` internally for SSH-key install, so adding the endpoint later is handler + DTO work only. None require rework to add later.
+Lineage *view* endpoint, per-sandbox auth scopes, stateful project registry, log streaming/aggregation, optional host-folder mount. None require rework to add later.

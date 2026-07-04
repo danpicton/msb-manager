@@ -23,6 +23,7 @@ func init() {
 	registerCommand(&command{name: "start", usage: "start a sandbox (start <name>)", run: cmdStart})
 	registerCommand(&command{name: "stop", usage: "stop a sandbox (stop <name>)", run: cmdStop})
 	registerCommand(&command{name: "rm", usage: "remove a sandbox (rm <name>)", run: cmdRm})
+	registerCommand(&command{name: "exec", usage: "run a command in a sandbox (exec <name> -- <cmd> [args...])", run: cmdExec})
 	registerCommand(&command{name: "logs", usage: "fetch sandbox logs (logs <name> [--tail --since --source])", run: cmdLogs})
 	registerCommand(&command{name: "metrics", usage: "show sandbox metrics (metrics <name>)", run: cmdMetrics})
 	registerCommand(&command{name: "volume", usage: "manage volumes (volume ls|create|rm)", run: cmdVolume})
@@ -276,6 +277,73 @@ func cmdRm(ctx context.Context, env *runEnv, args []string) int {
 		return exitGeneric
 	}
 	return env.doAction(ctx, http.MethodDelete, sandboxPath(name, ""), nil, "", "removed "+name)
+}
+
+// --- exec ---
+
+// cmdExec runs a command inside a sandbox: exec <name> -- <cmd> [args...].
+// It deliberately does NOT use parseFlags: everything after the first `--` is
+// the remote command verbatim, so its own flags (`ls -la`) pass through
+// instead of being parsed as msbctl flags.
+//
+// Rendering is a scoped exception to ADR-0007's generic-render rule (recorded
+// there): exec's entire purpose is faithful process semantics, so the three
+// response fields are destructured — remote stdout/stderr land on the local
+// streams and the remote exit code becomes msbctl's own (ssh-style; it may
+// therefore collide with msbctl's transport exit codes, as ssh's does).
+func cmdExec(ctx context.Context, env *runEnv, args []string) int {
+	sep := -1
+	for i, a := range args {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+	usage := func() int {
+		fmt.Fprintln(env.stderr, "error: usage: exec <name> -- <cmd> [args...]")
+		return exitGeneric
+	}
+	if sep < 0 {
+		return usage()
+	}
+	head, remote := args[:sep], args[sep+1:]
+	if len(head) != 1 || head[0] == "" || len(remote) == 0 {
+		return usage()
+	}
+	name := head[0]
+
+	if code := env.ensureToken(); code != exitOK {
+		return code
+	}
+	body, err := json.Marshal(struct {
+		Command []string `json:"command"`
+	}{Command: remote})
+	if err != nil {
+		fmt.Fprintf(env.stderr, "error: %v\n", err)
+		return exitGeneric
+	}
+	resp, err := env.client.do(ctx, http.MethodPost, sandboxPath(name, "exec"),
+		bytes.NewReader(body), "application/json")
+	if err != nil {
+		fmt.Fprintf(env.stderr, "error: %v\n", err)
+		return exitGeneric
+	}
+	if resp.status >= 400 {
+		renderServerError(env.stderr, resp.status, resp.body)
+		return exitCodeForStatus(resp.status)
+	}
+	var out struct {
+		Stdout   string `json:"stdout"`
+		Stderr   string `json:"stderr"`
+		ExitCode int    `json:"exit_code"`
+	}
+	if err := json.Unmarshal(resp.body, &out); err != nil {
+		fmt.Fprintf(env.stderr, "error: unexpected exec response: %v\n", err)
+		return exitGeneric
+	}
+	_, _ = io.WriteString(env.stdout, out.Stdout)
+	_, _ = io.WriteString(env.stderr, out.Stderr)
+	return out.ExitCode
 }
 
 // --- create (with secret interpolation) ---

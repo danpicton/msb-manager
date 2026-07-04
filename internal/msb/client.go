@@ -280,7 +280,7 @@ func sshKeysScript(keys []string) string {
 }
 
 // shellSingleQuote wraps s in single quotes, replacing any embedded single
-// quote with the standard '\'' close-escape-open sequence — the only way to
+// quote with the standard '\” close-escape-open sequence — the only way to
 // embed a literal ' inside a POSIX single-quoted string.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -347,6 +347,65 @@ func (c *Client) Rm(ctx context.Context, name string) error {
 	defer c.mu.Unlock()
 	_, stderr, err := c.run(ctx, "rm", "--", name)
 	return wrapRunErr(stderr, err)
+}
+
+// ExecResult is the outcome of a command that ran inside a sandbox: captured
+// output plus the command's exit code. A non-zero ExitCode is a *result*, not
+// an error — the command ran; it failed on its own terms.
+type ExecResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+// Exec shells out to `msb exec <name> -- <argv...>` and runs argv inside the
+// sandbox, request/response (no TTY, no streaming), bounded by the
+// per-invocation timeout. The `--` terminates msb's flag parsing so the guest
+// command — which may legitimately start with a dash — can never be parsed as
+// an msb flag (issue #3 defence in depth; same shape the ssh-key install
+// already uses).
+//
+// Exec mutates guest state only, but msb's supervisor is suspect under
+// concurrent invocation (CONTEXT verification #3) and the create-path exec
+// already runs under the mutating mutex, so this serialises with the other
+// mutating commands too.
+func (c *Client) Exec(ctx context.Context, name string, argv []string) (ExecResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	args := append([]string{"exec", name, "--"}, argv...)
+	stdout, stderr, err := c.run(ctx, args...)
+	return execOutcome(stdout, stderr, err)
+}
+
+// execOutcome classifies a runner result into "the command ran" (an
+// ExecResult, possibly with a non-zero exit) versus "msb itself failed" (a
+// typed error for the HTTP layer). Order matters: timeout first (a killed
+// child also reports an exit status), then msb's recognised stderr
+// categories, then an exit code is attributed to the guest command.
+//
+// OPEN VERIFICATION (CONTEXT #4): this assumes `msb exec` propagates the
+// guest command's exit code as its own. If msb v0.5.2 instead always exits
+// 0 (or collapses to 1), unclassified msb-side failures would surface here
+// as command outcomes — the response still carries msb's stderr, so the
+// caller sees what happened either way. Verify on a real msb and tighten.
+func execOutcome(stdout, stderr []byte, err error) (ExecResult, error) {
+	if err == nil {
+		return ExecResult{Stdout: string(stdout), Stderr: string(stderr)}, nil
+	}
+	if errors.Is(err, ErrTimeout) {
+		return ExecResult{}, err
+	}
+	if classified := classifyError(string(stderr)); classified != nil {
+		return ExecResult{}, classified
+	}
+	// *exec.ExitError satisfies this; matched as an interface so tests can
+	// drive the classification without spawning a real child.
+	var codeErr interface{ ExitCode() int }
+	if errors.As(err, &codeErr) && codeErr.ExitCode() > 0 {
+		return ExecResult{Stdout: string(stdout), Stderr: string(stderr), ExitCode: codeErr.ExitCode()}, nil
+	}
+	// Signal-killed (-1) or never spawned: an adapter failure.
+	return ExecResult{}, err
 }
 
 // LogsOpts mirrors the v1 subset of `msb logs` flags we expose through the

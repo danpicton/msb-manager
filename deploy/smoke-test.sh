@@ -87,6 +87,23 @@ step "inspect / metrics / logs"
 "$MSBCTL" metrics "$SB"
 "$MSBCTL" logs "$SB" --tail 5
 
+step "exec: run a command inside the sandbox"
+"$MSBCTL" exec "$SB" -- sh -c 'echo smoke-exec-ok; ls /workspace' | grep -q smoke-exec-ok
+echo "   exec output round-tripped"
+
+step "exec: remote exit code is mirrored (CONTEXT open verification #4)"
+if "$MSBCTL" exec "$SB" -- sh -c 'exit 7'; then
+  echo "FAIL: expected exit code 7 from the remote command" >&2
+  exit 1
+else
+  rc=$?
+  if [ "$rc" -eq 7 ]; then
+    echo "   exit code 7 mirrored — msb exec propagates exit codes"
+  else
+    echo "   got exit $rc, not 7 — msb exec does NOT propagate exit codes verbatim; update CONTEXT #4" >&2
+  fi
+fi
+
 step "invariant: volume rm is refused while a running sandbox holds it (409)"
 expect_refused "volume rm $VOL while $SB is running" "$MSBCTL" volume rm "$VOL"
 
