@@ -47,6 +47,7 @@ type Snapshot struct {
 	ID           string  `json:"snapshot_id,omitempty"`
 	Group        string  `json:"group,omitempty"`
 	Reference    string  `json:"reference,omitempty"`
+	Scope        string  `json:"scope,omitempty"`
 	Digest       string  `json:"digest"`
 	ImageRef     string  `json:"image_ref"`
 	Format       string  `json:"format"`

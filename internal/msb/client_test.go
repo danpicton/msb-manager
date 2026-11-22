@@ -253,7 +253,7 @@ func TestClientCreate_FromSnapshotRestoresAndSetsEnvironment(t *testing.T) {
 	r := &recordingRunner{
 		calls: &calls,
 		outputs: [][]byte{
-			[]byte(`[{"name":"probe-snap","reference":"/var/lib/msb/snapshots/probe-snap/snap_example"}]`),
+			[]byte(`[{"name":"probe-snap","scope":"disk","reference":"/var/lib/msb/snapshots/probe-snap/snap_example"}]`),
 			[]byte(`[{"name":"myvol","kind":"disk","capacity_bytes":1073741824}]`),
 			[]byte(`{"volumes":{"items":[{"name":"myvol","path":"/var/lib/msb/volumes/myvol"}]}}`),
 		},
@@ -274,13 +274,63 @@ func TestClientCreate_FromSnapshotRestoresAndSetsEnvironment(t *testing.T) {
 		{"snapshot", "ls", "--format", "json"},
 		{"volume", "ls", "--format", "json"},
 		{"df", "--format", "json"},
-		{"restore", "--disk-only", "--allow-missing-resources", "-n", "derived",
+		{"restore", "--allow-missing-resources", "-n", "derived",
 			"-c", "2", "-m", "512", "--mount-disk", "/var/lib/msb/volumes/myvol/disk.raw:/workspace:format=raw,fstype=ext4",
 			"-p", "8080:80", "--", "/var/lib/msb/snapshots/probe-snap/snap_example"},
 		{"modify", "-e", "FOO=bar", "--", "derived"},
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Errorf("invocations = %v, want %v", calls, want)
+	}
+}
+
+func TestClientCreate_UsesRestoreModeForSnapshotScope(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		scope     string
+		stderr    string
+		want      []bool
+		wantError string
+	}{
+		{name: "checkpoint cold boot", scope: "full", want: []bool{true}},
+		{name: "disk snapshot with qualified selector", stderr: diskSnapshotRestoreRejection, want: []bool{true, false}},
+		{name: "other restore error", stderr: "error: failed to start\n  → disk image is locked", want: []bool{true}, wantError: "disk image is locked"},
+		{name: "full checkpoint rejection stays cold", scope: "full", stderr: diskSnapshotRestoreRejection,
+			want: []bool{true}, wantError: "disk_only requires a full snapshot"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var diskOnly []bool
+			selector := "web:baseline"
+			wantReference := selector
+			if tc.scope != "" {
+				selector, wantReference = "baseline", "/snapshots/web/snap_example"
+			}
+			c := NewClient("msb", runnerFunc(func(_ context.Context, _ []string, _ string, args ...string) ([]byte, []byte, error) {
+				if slices.Equal(args, []string{"snapshot", "ls", "--format", "json"}) {
+					listing := `[{"name":"baseline","scope":"` + tc.scope + `","reference":"` + wantReference + `"}]`
+					return []byte(listing), nil, nil
+				}
+				if args[0] != "restore" || args[len(args)-1] != wantReference {
+					t.Fatalf("unexpected command %v", args)
+				}
+				diskOnly = append(diskOnly, slices.Contains(args, "--disk-only"))
+				if len(diskOnly) == 1 && tc.stderr != "" {
+					return nil, []byte(tc.stderr + "\n"), exitCodeError{1}
+				}
+				return nil, nil, nil
+			}))
+			err := c.Create(t.Context(), CreateOpts{Name: "derived", Snapshot: selector})
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Errorf("Create: got %v, want error containing %q", err, tc.wantError)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(diskOnly, tc.want) {
+				t.Errorf("--disk-only on each call = %v, want %v", diskOnly, tc.want)
+			}
+		})
 	}
 }
 

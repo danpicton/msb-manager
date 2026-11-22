@@ -65,7 +65,7 @@ Every route except `/healthz` and `/readyz` requires `Authorization: Bearer <tok
 |---|---|---|
 | `GET`    | `/sandboxes` | `msb ls --format json` |
 | `GET`    | `/sandboxes/{name}` | `msb inspect --format json` |
-| `POST`   | `/sandboxes` | `msb create` (image) or `msb restore --disk-only` (snapshot-derived) |
+| `POST`   | `/sandboxes` | `msb create` (image) or `msb restore` (snapshot-derived) |
 | `POST`   | `/sandboxes/{name}/start` | `msb start` |
 | `POST`   | `/sandboxes/{name}/stop` | `msb stop` |
 | `DELETE` | `/sandboxes/{name}` | `msb rm` |
@@ -129,7 +129,7 @@ ssh_keys:                   # optional, OpenSSH-format pubkey lines
   - ssh-ed25519 AAAA...key... user@host
 ```
 
-Snapshot restore boots the captured disk and uses the volume and ports from the new spec. The manager resolves disk-backed named volumes through the local microsandbox storage catalog. Environment overrides apply to subsequent guest commands. Egress secrets require an image-based create. msb-manager passes their values through a temporary file with mode `0600`, and microsandbox stores the literal values in its local sandbox configuration for future starts.
+Snapshot restore boots the captured disk and uses the volume and ports from the new spec. Full checkpoints use `--disk-only` to cold-boot the captured disk. The manager resolves disk-backed named volumes through the local microsandbox storage catalog. Environment overrides apply to subsequent guest commands. Egress secrets require an image-based create. msb-manager passes their values through a temporary file with mode `0600`, and microsandbox stores the literal values in its local sandbox configuration for future starts.
 
 SSH public keys are installed after create or restore with `msb exec`. If installation fails, msb-manager attempts to remove the sandbox with `msb rm -f`.
 

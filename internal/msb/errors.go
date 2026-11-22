@@ -67,6 +67,39 @@ func classifyError(stderr string) error {
 	return nil
 }
 
+const diskSnapshotRestoreRejection = "error: invalid config: disk_only requires a full snapshot with checkpoint state"
+
+func diskSnapshotRejectsDiskOnly(stderr []byte) bool {
+	for line := range strings.SplitSeq(string(stderr), "\n") {
+		if strings.TrimSpace(line) == diskSnapshotRestoreRejection {
+			return true
+		}
+	}
+	return false
+}
+
+// Include the CLI's restore diagnostic in server logs. The HTTP layer only
+// returns its public status message. Restore does not take secret config.
+func wrapRestoreError(stderr []byte, err error) error {
+	if err == nil || errors.Is(err, ErrTimeout) || errors.Is(err, ErrOutputTooLarge) {
+		return err
+	}
+	if classified := classifyError(string(stderr)); classified != nil {
+		return classified
+	}
+	for remaining := string(stderr); remaining != ""; {
+		line, next, _ := strings.Cut(remaining, "\n")
+		if detail, ok := strings.CutPrefix(strings.TrimSpace(line), "error: "); ok {
+			if context := strings.TrimSpace(next); context != "" {
+				detail += "\n" + context
+			}
+			return fmt.Errorf("msb restore: %w: %.1024s", err, detail)
+		}
+		remaining = next
+	}
+	return err
+}
+
 // Preserve the error category without retaining CLI diagnostics from secret
 // configuration. The subprocess error carries only the exit or spawn status.
 func wrapSecretConfigError(stderr []byte, err error) error {

@@ -172,20 +172,20 @@ func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var source string
+	var snapshotScope, source string
 	var args, env []string
 	if opts.Snapshot != "" {
 		if len(opts.Secrets) > 0 {
 			return ErrRestoreSecretsUnsupported
 		}
 		var err error
-		source, err = c.resolveSnapshot(ctx, opts.Snapshot)
+		source, snapshotScope, err = c.resolveSnapshot(ctx, opts.Snapshot)
 		if err != nil {
 			return err
 		}
 		// The spec supplies all external bindings. A restore may intentionally
 		// omit a source volume or mount a different one at a different path.
-		args = []string{"restore", "--disk-only", "--allow-missing-resources", "-n", opts.Name}
+		args = []string{"restore", "--allow-missing-resources", "-n", opts.Name}
 	} else {
 		source = opts.Image
 		args = appendEnvArgs([]string{"create", "-n", opts.Name}, opts.Env)
@@ -205,7 +205,11 @@ func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 		return err
 	}
 	args = append(args, "--", source)
-	if _, stderr, err := c.runWithEnv(ctx, env, args...); err != nil {
+	if opts.Snapshot != "" {
+		if err := c.restore(ctx, args, snapshotScope); err != nil {
+			return err
+		}
+	} else if _, stderr, err := c.runWithEnv(ctx, env, args...); err != nil {
 		if len(opts.Secrets) > 0 {
 			// CLI config diagnostics can quote secret values, including escaped
 			// forms. Preserve known error categories without logging details.
@@ -228,6 +232,21 @@ func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 		}
 	}
 	return nil
+}
+
+func (c *Client) restore(ctx context.Context, args []string, scope string) error {
+	if scope != "disk" {
+		// Full checkpoints must cold-boot. For a selector without a known
+		// scope, v0.7.16 rejects --disk-only on disk snapshots before creating
+		// the destination. Only that specific rejection permits a plain restore.
+		_, stderr, err := c.run(ctx, append([]string{"restore", "--disk-only"}, args[1:]...)...)
+		if err == nil || scope == "full" || ctx.Err() != nil ||
+			errors.Is(err, ErrTimeout) || errors.Is(err, ErrOutputTooLarge) || !diskSnapshotRejectsDiskOnly(stderr) {
+			return wrapRestoreError(stderr, err)
+		}
+	}
+	_, stderr, err := c.run(ctx, args...)
+	return wrapRestoreError(stderr, err)
 }
 
 func (c *Client) rollbackCreate(ctx context.Context, name, operation string, cause error) error {
@@ -497,16 +516,15 @@ func (c *Client) SnapshotList(ctx context.Context) ([]Snapshot, error) {
 	return parseSnapshotList(stdout)
 }
 
-// resolveSnapshot maps existing short names to the stable reference returned
-// by msb. Bare names now select group heads, and migrated artifacts may have
-// no group. Explicit group:member selectors and IDs also work.
-func (c *Client) resolveSnapshot(ctx context.Context, name string) (string, error) {
+// resolveSnapshot maps existing short names to the stable reference and scope
+// returned by msb. Selectors resolved by msb itself have an unknown scope here.
+func (c *Client) resolveSnapshot(ctx context.Context, name string) (string, string, error) {
 	if strings.Contains(name, ":") {
-		return name, nil
+		return name, "", nil
 	}
 	rows, err := c.SnapshotList(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var matching *Snapshot
 	for i := range rows {
@@ -514,14 +532,17 @@ func (c *Client) resolveSnapshot(ctx context.Context, name string) (string, erro
 			continue
 		}
 		if matching != nil {
-			return "", ErrSnapshotAmbiguous
+			return "", "", ErrSnapshotAmbiguous
 		}
 		matching = &rows[i]
 	}
-	if matching != nil && matching.Reference != "" {
-		return matching.Reference, nil
+	if matching != nil {
+		if matching.Reference != "" {
+			name = matching.Reference
+		}
+		return name, matching.Scope, nil
 	}
-	return name, nil
+	return name, "", nil
 }
 
 // SnapshotCreate puts each API-named snapshot in its own group. Installed
@@ -558,7 +579,7 @@ func (c *Client) SnapshotCreate(ctx context.Context, from, dest string, labels m
 func (c *Client) SnapshotRm(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	reference, err := c.resolveSnapshot(ctx, name)
+	reference, _, err := c.resolveSnapshot(ctx, name)
 	if err != nil {
 		return err
 	}
