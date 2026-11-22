@@ -137,5 +137,6 @@ step "tear down"
 "$MSBCTL" rm "$SB"
 "$MSBCTL" snapshot rm "$SNAP"
 "$MSBCTL" volume rm "$VOL"
+trap - EXIT
 
 printf '\nPASS: control plane verified against the live msb.\n'
