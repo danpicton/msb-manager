@@ -1,7 +1,6 @@
 # Upstream issues — microsandbox
 
-Findings against **`msb` v0.5.2** while building msb-manager. Each is a candidate
-to file against [superradcompany/microsandbox](https://github.com/superradcompany/microsandbox).
+These findings were recorded against `msb` v0.5.2. In v0.7.16, microsandbox blocks volume removal while an active sandbox uses the volume. Snapshot inspection still has text output. The manager also continues to omit secret configuration from its inspect response.
 
 ---
 

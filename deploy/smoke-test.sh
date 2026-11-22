@@ -67,9 +67,7 @@ fi
 step "list sandboxes"
 "$MSBCTL" ls
 
-step "exec against a missing sandbox is a 404, not a command result"
-# Proves the anchored stderr classifier still recognises a real msb
-# 'error: sandbox not found:' line (PR #34 review, finding 1).
+step "exec against a missing sandbox is refused"
 expect_refused "exec in absent sandbox smoke-no-such-sandbox" \
   "$MSBCTL" exec smoke-no-such-sandbox -- true
 
@@ -94,19 +92,20 @@ step "inspect / metrics / logs"
 "$MSBCTL" logs "$SB" --tail 5
 
 step "exec: run a command inside the sandbox"
-"$MSBCTL" exec "$SB" -- sh -c 'echo smoke-exec-ok; ls /workspace' | grep -q smoke-exec-ok
+"$MSBCTL" exec "$SB" -- sh -c 'touch /workspace/.msb-manager-smoke && echo smoke-exec-ok' | grep -q smoke-exec-ok
 echo "   exec output round-tripped"
 
-step "exec: remote exit code is mirrored (CONTEXT open verification #4)"
+step "exec: remote exit code is mirrored"
 if "$MSBCTL" exec "$SB" -- sh -c 'exit 7'; then
   echo "FAIL: expected exit code 7 from the remote command" >&2
   exit 1
 else
   rc=$?
   if [ "$rc" -eq 7 ]; then
-    echo "   exit code 7 mirrored — msb exec propagates exit codes"
+    echo "   exit code 7 mirrored"
   else
-    echo "   got exit $rc, not 7 — msb exec does NOT propagate exit codes verbatim; update CONTEXT #4" >&2
+    echo "FAIL: expected exit code 7, got $rc" >&2
+    exit 1
   fi
 fi
 
@@ -127,6 +126,7 @@ volume:
   mount: /workspace
 EOF
 ensure_running "$DERIVED"
+"$MSBCTL" exec "$DERIVED" -- test -f /workspace/.msb-manager-smoke
 
 step "invariant: one running sandbox per volume (409)"
 expect_refused "start $SB while $DERIVED holds $VOL" "$MSBCTL" start "$SB"

@@ -485,7 +485,7 @@ func cmdSnapshot(ctx context.Context, env *runEnv, args []string) int {
 	case "create":
 		fs := flag.NewFlagSet("snapshot create", flag.ContinueOnError)
 		from := fs.String("from", "", "source stopped sandbox (required)")
-		force := fs.Bool("force", false, "overwrite an existing snapshot of the same name")
+		force := fs.Bool("force", false, "legacy flag, installed snapshots are immutable")
 		labels := &kvFlag{}
 		fs.Var(labels, "label", "set a snapshot label (repeatable): --label KEY=VALUE")
 		pos, ok := env.parseFlags(fs, rest)

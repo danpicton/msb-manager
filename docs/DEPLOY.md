@@ -10,10 +10,7 @@ All the referenced files live in [`deploy/`](../deploy/).
 
 ## 1. Prerequisites
 
-- A Linux host with KVM (`/dev/kvm` present) and [microsandbox](https://github.com/superradcompany/microsandbox)
-  installed and working: `msb ls` returns cleanly for the user that will run
-  the service. The parsers in this repo are pinned against **msb v0.5.2**
-  fixtures — after any msb upgrade, re-run the smoke test (step 7).
+- A Linux host with KVM (`/dev/kvm` present) and [microsandbox v0.7.16](https://github.com/superradcompany/microsandbox/releases/tag/v0.7.16), including the matching libkrun firmware. Run `msb --version` and check that `msb ls --format json` succeeds as the service user.
 - Caddy built with your DNS provider module (DNS-01 needs one), e.g.
   `xcaddy build --with github.com/caddy-dns/cloudflare`.
 - DNS records for your chosen hostname(s) pointing at the host (e.g. in
@@ -49,7 +46,8 @@ microsandbox must be usable *by this user* — install `msb` somewhere on its
 PATH (or set `MSB_MANAGER_MSB_PATH`) and verify:
 
 ```bash
-sudo -u msb-manager msb ls
+sudo -u msb-manager msb --version
+sudo -u msb-manager msb ls --format json
 ```
 
 ## 4. Configure
@@ -120,10 +118,7 @@ sudo install -m 0755 msb-manager /usr/local/bin/msb-manager
 sudo systemctl restart msb-manager
 ```
 
-The server is stateless (ADR-0003): restarts re-derive everything from
-`msb ls`, so an upgrade is just a binary swap. After upgrading **msb**
-(rather than msb-manager), re-run the smoke test — the CLI's JSON output is
-the wire format between the two.
+The manager rebuilds its volume claims from microsandbox state at startup. When upgrading microsandbox as well, stop the manager and other clients that share its `MSB_HOME`. Back up that directory with the sandboxes stopped, then upgrade `msb` and its matching firmware together. Verify the catalog as the service user before restarting the manager and running the smoke test. See the [upstream migration guide](https://github.com/superradcompany/microsandbox/blob/v0.7.16/docs/migrations/v0.7.mdx).
 
 ## Out of scope here
 

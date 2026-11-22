@@ -102,6 +102,7 @@ func NewSandboxDetail(d msb.SandboxDetail) SandboxDetail {
 // matching what msb emits.
 type Snapshot struct {
 	Name         string  `json:"name"`
+	Reference    string  `json:"reference,omitempty"`
 	Digest       string  `json:"digest"`
 	ImageRef     string  `json:"image_ref"`
 	Format       string  `json:"format"`
@@ -113,8 +114,18 @@ type Snapshot struct {
 
 // NewSnapshot maps an adapter Snapshot onto the DTO.
 func NewSnapshot(s msb.Snapshot) Snapshot {
+	ref := s.Reference
+	if s.Group != "" && msb.ValidSnapshotRef(s.Group+":"+s.Name) {
+		ref = s.Group + ":" + s.Name
+	} else if msb.ValidSnapshotRef(s.ID) {
+		ref = s.ID
+	}
+	if !msb.ValidSnapshotRef(ref) {
+		ref = ""
+	}
 	return Snapshot{
 		Name:         s.Name,
+		Reference:    ref,
 		Digest:       s.Digest,
 		ImageRef:     s.ImageRef,
 		Format:       s.Format,

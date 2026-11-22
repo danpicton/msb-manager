@@ -1,6 +1,9 @@
 package msb
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // Identifier validation guards the subprocess boundary against argument/flag
 // injection (issue #3). Names arrive from clients (spec body and URL path
@@ -43,6 +46,13 @@ var (
 // at most 128 characters.
 func ValidName(s string) bool {
 	return nameRe.MatchString(s)
+}
+
+// ValidSnapshotRef accepts a short name or ID and qualified group:member
+// selectors. Local filesystem paths are resolved only from msb's own listing.
+func ValidSnapshotRef(s string) bool {
+	group, member, qualified := strings.Cut(s, ":")
+	return ValidName(group) && (!qualified || ValidName(member))
 }
 
 // ValidImage reports whether s is an acceptable image reference: non-empty, no

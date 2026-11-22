@@ -22,6 +22,8 @@ func TestParseSizeMiB(t *testing.T) {
 		{"G", 0, true},      // no number
 		{"1K", 0, true},     // sub-MiB unit not supported
 		{"1Q", 0, true},     // unknown unit
+		{"0", 0, true},
+		{"4096T", 0, true}, // exceeds msb's u32 MiB limit
 	}
 	for _, c := range cases {
 		got, err := ParseSizeMiB(c.in)

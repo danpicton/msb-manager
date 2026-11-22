@@ -13,7 +13,7 @@ It shells out to the `msb` CLI (ADR-0002) — never embeds the SDK. It's statele
 - Snapshot management (list / create / rm) and **derived sandboxes** (boot a fresh sandbox from a snapshot)
 - Named volume management (list / create / rm) with a one-running-sandbox-per-volume invariant
 - Fetch-only **logs** (NDJSON) and point-in-time **metrics**
-- Credentials at create-time: env vars, **egress secrets** (`--secret KEY=VAL@HOST`), **SSH pubkey install** via a bootstrap script
+- Credentials at create-time: env vars, **egress secrets** for image-based creates and **SSH public key installation**
 - Single bearer token; binds **loopback only** (Caddy is the TLS front door)
 
 ## What it does NOT do
@@ -24,6 +24,8 @@ It shells out to the `msb` CLI (ADR-0002) — never embeds the SDK. It's statele
 - Store a project registry. Clients hold their own specs; restarts re-derive state from `msb`.
 
 ## Build & run
+
+The server targets microsandbox v0.7.16 and its matching firmware. [Microsandbox v0.7.16 release](https://github.com/superradcompany/microsandbox/releases/tag/v0.7.16)
 
 ```bash
 go build -o ./msb-manager ./cmd/msb-manager
@@ -63,15 +65,15 @@ Every route except `/healthz` and `/readyz` requires `Authorization: Bearer <tok
 |---|---|---|
 | `GET`    | `/sandboxes` | `msb ls --format json` |
 | `GET`    | `/sandboxes/{name}` | `msb inspect --format json` |
-| `POST`   | `/sandboxes` | `msb create` (image) or `msb run -d --snapshot` (snapshot-derived) |
+| `POST`   | `/sandboxes` | `msb create` (image) or `msb restore --disk-only` (snapshot-derived) |
 | `POST`   | `/sandboxes/{name}/start` | `msb start` |
 | `POST`   | `/sandboxes/{name}/stop` | `msb stop` |
 | `DELETE` | `/sandboxes/{name}` | `msb rm` |
-| `POST`   | `/sandboxes/{name}/exec` | `msb exec <name> -- <argv...>` |
+| `POST`   | `/sandboxes/{name}/exec` | `msb exec --no-stdin <name> -- <argv...>` |
 | `GET`    | `/sandboxes/{name}/logs` | `msb logs <name> --json` |
 | `GET`    | `/sandboxes/{name}/metrics` | `msb metrics <name> --format json` |
 
-`POST /sandboxes/{name}/exec` takes `{command: [<argv...>]}` (no per-call env — prefix with `env KEY=VALUE` instead) and returns `{stdout, stderr, exit_code}`. The command exiting non-zero is HTTP **200** with the exit code in the body — the control plane succeeded at running it; HTTP errors are reserved for the control plane itself (404 unknown sandbox, 504 timeout). It is request/response, bounded by the msb command timeout: short commands, not interactive shells or long jobs. Captured output is capped at **32 MiB per stream** — past that the call fails with a 500 naming the cap (bound the command with `tail`/`head` instead), so one runaway `exec … -- yes` can't balloon the control plane's memory. Guest stderr is never mistaken for an msb error: only an `error: <category>:` line at the very start of stderr classifies as a control-plane failure.
+`POST /sandboxes/{name}/exec` requires a running sandbox and takes `{command: [<argv...>]}` (no per-call env — prefix with `env KEY=VALUE` instead) and returns `{stdout, stderr, exit_code}`. The command exiting non-zero is HTTP **200** with the exit code in the body — the control plane succeeded at running it; HTTP errors are reserved for the control plane itself (404 unknown sandbox, 409 stopped or paused sandbox, 504 timeout). It is request/response, bounded by the msb command timeout: short commands, not interactive shells or long jobs. Captured output is capped at **32 MiB per stream** — past that the call fails with a 500 naming the cap (bound the command with `tail`/`head` instead), so one runaway `exec … -- yes` can't balloon the control plane's memory. Guest stderr is never mistaken for an msb error: only an `error: <category>:` line at the very start of stderr classifies as a control-plane failure.
 
 `GET /sandboxes/{name}/logs` accepts `tail`, `since`, `until`, `source`, `grep` query params, each mapping 1:1 to the `msb` flag of the same name. Response is `application/x-ndjson` — one JSON object per line, pass-through from `msb`.
 
@@ -80,8 +82,10 @@ Every route except `/healthz` and `/readyz` requires `Authorization: Bearer <tok
 | Method | Path | Maps to |
 |---|---|---|
 | `GET`    | `/snapshots` | `msb snapshot ls --format json` |
-| `POST`   | `/snapshots` | `msb snapshot create --from <from> [--label k=v ...] [-f] <name>` |
-| `DELETE` | `/snapshots/{name}` | `msb snapshot rm <name>` |
+| `POST`   | `/snapshots` | `msb snapshot create --sandbox <from> --group <name> [--label k=v ...] <name>` |
+| `DELETE` | `/snapshots/{name}` | `msb snapshot rm <reference>` |
+
+Capture snapshots from stopped sandboxes. Installed snapshots are immutable. Legacy requests with `force: true` can create a new snapshot and receive 409 if the name is already in use. Restore and remove accept unique short names and the `reference` returned by the list endpoint.
 
 `GET /snapshots/{name}` is deliberately absent: `msb snapshot inspect` has no `--format json`. See [`docs/upstream-issues.md`](docs/upstream-issues.md) issue #3.
 
@@ -90,8 +94,8 @@ Every route except `/healthz` and `/readyz` requires `Authorization: Bearer <tok
 | Method | Path | Maps to |
 |---|---|---|
 | `GET`    | `/volumes` | `msb volume ls --format json` |
-| `POST`   | `/volumes` | `msb volume create --size <size> <name>` |
-| `DELETE` | `/volumes/{name}` | `msb volume rm <name>` — **refused with 409 if a running sandbox holds the volume.** msb itself doesn't enforce this; msb-manager does. |
+| `POST`   | `/volumes` | `msb volume create --kind disk --size <MiB> <name>` |
+| `DELETE` | `/volumes/{name}` | `msb volume rm <name>` — **returns 409 if an active sandbox holds the volume.** |
 
 ## Sandbox spec
 
@@ -100,7 +104,7 @@ The `POST /sandboxes` body. Either `image` or `snapshot` is required; they're mu
 ```yaml
 name: my-sandbox            # required, unique sandbox name
 image: alpine               # required (mutually exclusive with snapshot)
-# snapshot: my-snap         # alternative: derive from a snapshot
+# snapshot: my-snap         # alternative: restore by name or reference
 
 cpus: 2                     # optional
 memory: 512                 # MiB, optional
@@ -116,7 +120,7 @@ ports:                      # optional, host:guest forwards
   - host: 8080
     guest: 80
 
-secrets:                    # optional, msb's --secret KEY=VAL@HOST
+secrets:                    # optional for image-based creates
   - key: GITHUB_TOKEN       # released only to outbound traffic for the host
     value: ghp_xxxxxxxx
     host: github.com
@@ -125,7 +129,9 @@ ssh_keys:                   # optional, OpenSSH-format pubkey lines
   - ssh-ed25519 AAAA...key... user@host
 ```
 
-SSH keys are installed via a `--script-raw` snippet executed after create with `msb exec`; if the install fails, msb-manager rolls back with `msb rm -f` so create has atomic semantics.
+Snapshot restore boots the captured disk and uses the volume and ports from the new spec. The manager resolves disk-backed named volumes through the local microsandbox storage catalog. Environment overrides apply to subsequent guest commands. Egress secrets require an image-based create. msb-manager passes their values through a temporary file with mode `0600`, and microsandbox stores the literal values in its local sandbox configuration for future starts.
+
+SSH public keys are installed after create or restore with `msb exec`. If installation fails, msb-manager attempts to remove the sandbox with `msb rm -f`.
 
 ## Status codes
 
@@ -178,7 +184,7 @@ msbctl snapshot create nightly --from my-sandbox
 
 ## Concurrency
 
-`msb` v0.5.2 is **not concurrent-safe** for mutating commands (CONTEXT verification #3 — parallel `msb create` left the supervisor unable to service `msb ls`). msb-manager serialises `create` / `start` / `stop` / `rm` via a per-process mutex; reads (`list`, `inspect`, `logs`, `metrics`) run unguarded. The one-running-sandbox-per-volume invariant is enforced by an in-memory `VolumeLock` seeded from `msb` state at startup.
+msb-manager serialises lifecycle mutations and exec with a per-process mutex. Reads such as list, inspect, logs, and metrics can run concurrently. The in-memory volume lock is seeded from running, starting, draining, and paused sandboxes at startup.
 
 ## Development
 

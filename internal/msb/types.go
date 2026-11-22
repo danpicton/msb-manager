@@ -23,6 +23,8 @@ type SandboxDetail struct {
 	Workdir   string            `json:"workdir"`
 	Env       map[string]string `json:"env,omitempty"`
 	Mounts    []Mount           `json:"mounts,omitempty"`
+	// ActiveMounts is present when inspect reports a separate running configuration.
+	ActiveMounts *[]Mount `json:"-"`
 }
 
 // Mount is a guest mount point. Type distinguishes "Tmpfs" (auto, sized) from
@@ -33,6 +35,7 @@ type Mount struct {
 	ReadOnly bool   `json:"readonly"`
 	SizeMiB  int    `json:"size_mib,omitempty"` // Tmpfs mounts only
 	Name     string `json:"name,omitempty"`     // source volume name; set for Type=="Named"
+	DiskPath string `json:"-"`                  // host path of a DiskImage mount
 }
 
 // Snapshot is one row of `msb snapshot ls`: a stored disk artifact derived
@@ -41,6 +44,9 @@ type Mount struct {
 // the distinction so JSON re-encodes the same way.
 type Snapshot struct {
 	Name         string  `json:"name"`
+	ID           string  `json:"snapshot_id,omitempty"`
+	Group        string  `json:"group,omitempty"`
+	Reference    string  `json:"reference,omitempty"`
 	Digest       string  `json:"digest"`
 	ImageRef     string  `json:"image_ref"`
 	Format       string  `json:"format"`
@@ -69,6 +75,7 @@ type Metrics struct {
 // Volume is one row of `msb volume ls`: a named microsandbox volume.
 type Volume struct {
 	Name      string `json:"name"`
+	Kind      string `json:"kind,omitempty"`
 	QuotaMiB  int    `json:"quota_mib"`
 	UsedBytes int64  `json:"used_bytes"`
 	CreatedAt string `json:"created_at"`
@@ -78,8 +85,21 @@ type Volume struct {
 // what the one-VM-per-volume lock keys on — derivable from msb state alone,
 // so the lock stays stateless (CONTEXT open verification #1, resolved).
 func (d SandboxDetail) VolumeNames() []string {
+	return volumeNames(d.Mounts)
+}
+
+// ActiveVolumeNames reports mounts held by the running configuration, falling
+// back to the desired configuration when msb has no active configuration.
+func (d SandboxDetail) ActiveVolumeNames() []string {
+	if d.ActiveMounts != nil {
+		return volumeNames(*d.ActiveMounts)
+	}
+	return d.VolumeNames()
+}
+
+func volumeNames(mounts []Mount) []string {
 	var out []string
-	for _, m := range d.Mounts {
+	for _, m := range mounts {
 		if m.Type == "Named" && m.Name != "" {
 			out = append(out, m.Name)
 		}

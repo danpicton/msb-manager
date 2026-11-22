@@ -88,14 +88,16 @@ func reconcileVolumes(ctx context.Context, client sandboxInspector, vlock *lock.
 	}
 	state := make(map[string]string)
 	for _, sb := range sandboxes {
-		if sb.Status != "Running" {
+		switch sb.Status {
+		case "Starting", "Running", "Draining", "Paused":
+		default:
 			continue
 		}
 		detail, err := client.Inspect(ctx, sb.Name)
 		if err != nil {
 			return err
 		}
-		for _, v := range detail.VolumeNames() {
+		for _, v := range detail.ActiveVolumeNames() {
 			state[v] = sb.Name
 		}
 	}

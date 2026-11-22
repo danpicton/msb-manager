@@ -15,13 +15,19 @@ import (
 //   - "sandbox already exists: <details>"
 //   - "sandbox still running: <details>"
 var (
-	ErrSandboxNotFound       = errors.New("msb: sandbox not found")
-	ErrSandboxAlreadyExists  = errors.New("msb: sandbox already exists")
-	ErrSandboxStillRunning   = errors.New("msb: sandbox still running")
-	ErrVolumeAlreadyExists   = errors.New("msb: volume already exists")
-	ErrVolumeNotFound        = errors.New("msb: volume not found")
-	ErrSnapshotAlreadyExists = errors.New("msb: snapshot already exists")
-	ErrSnapshotNotFound      = errors.New("msb: snapshot not found")
+	ErrSandboxNotFound           = errors.New("msb: sandbox not found")
+	ErrSandboxAlreadyExists      = errors.New("msb: sandbox already exists")
+	ErrSandboxStillRunning       = errors.New("msb: sandbox still running")
+	ErrSandboxNotRunning         = errors.New("msb: sandbox is not running")
+	ErrSandboxRollbackFailed     = errors.New("msb: failed to remove partially created sandbox")
+	ErrVolumeAlreadyExists       = errors.New("msb: volume already exists")
+	ErrVolumeNotFound            = errors.New("msb: volume not found")
+	ErrVolumeInUse               = errors.New("msb: volume is in use")
+	ErrInvalidVolumeSize         = errors.New("msb: invalid volume size")
+	ErrSnapshotAlreadyExists     = errors.New("msb: snapshot already exists")
+	ErrSnapshotNotFound          = errors.New("msb: snapshot not found")
+	ErrSnapshotAmbiguous         = errors.New("msb: snapshot name is ambiguous")
+	ErrRestoreSecretsUnsupported = errors.New("msb: snapshot restore does not accept egress secrets")
 
 	// ErrTimeout is returned when an msb invocation exceeds its bounded
 	// lifetime (issue #4). It's distinct from a non-zero exit so the HTTP layer
@@ -45,6 +51,13 @@ var (
 // mis-routing statuses.
 func classifyError(stderr string) error {
 	s := strings.TrimSpace(stderr)
+	if strings.Contains(s, `volume "`) && (strings.Contains(s, " is attached to active sandbox ") ||
+		strings.Contains(s, " is currently attached by a running sandbox")) {
+		return ErrVolumeInUse
+	}
+	if strings.Contains(s, "snapshot source sandbox '") && strings.Contains(s, "' is not stopped") {
+		return ErrSandboxStillRunning
+	}
 	for _, c := range classifierTable {
 		if i := strings.Index(s, c.prefix); i >= 0 {
 			detail := strings.TrimSpace(s[i+len(c.prefix):])
@@ -52,6 +65,22 @@ func classifyError(stderr string) error {
 		}
 	}
 	return nil
+}
+
+// Preserve the error category without retaining CLI diagnostics from secret
+// configuration. The subprocess error carries only the exit or spawn status.
+func wrapSecretConfigError(stderr []byte, err error) error {
+	if errors.Is(err, ErrTimeout) || errors.Is(err, ErrOutputTooLarge) {
+		return err
+	}
+	classified := classifyError(string(stderr))
+	if classified == nil {
+		return err
+	}
+	if category := errors.Unwrap(classified); category != nil {
+		return category
+	}
+	return classified
 }
 
 // classifyErrorAnchored is classifyError for streams that are NOT purely

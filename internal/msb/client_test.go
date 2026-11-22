@@ -2,8 +2,11 @@ package msb
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,7 +25,7 @@ type fakeRunner struct {
 	gotArgs []string
 }
 
-func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte, []byte, error) {
+func (f *fakeRunner) Run(_ context.Context, _ []string, name string, args ...string) ([]byte, []byte, error) {
 	f.gotName = name
 	f.gotArgs = args
 	return f.stdout, f.stderr, f.err
@@ -62,6 +65,31 @@ func TestClientInspect_InvokesMsbInspectJSON(t *testing.T) {
 	}
 }
 
+func TestClientInspect_RecognizesRestoredManagedDisk(t *testing.T) {
+	var calls [][]string
+	r := &recordingRunner{calls: &calls, outputs: [][]byte{
+		[]byte(`{
+			"name":"derived","status":"Running",
+			"config":{"mounts":[
+				{"type":"DiskImage","host":"/custom/volumes/data/disk.raw","guest":"/workspace"},
+				{"type":"DiskImage","host":"/other/data/disk.raw","guest":"/external"}
+			]},
+			"active_config":{"mounts":[{"type":"DiskImage","host":"/custom/volumes/data/disk.raw","guest":"/workspace"}]}
+		}`),
+		[]byte(`{"volumes":{"items":[{"name":"data","path":"/custom/volumes/data"}]}}`),
+	}}
+	detail, err := NewClient("msb", r).Inspect(context.Background(), "derived")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(detail.VolumeNames(), []string{"data"}) || !slices.Equal(detail.ActiveVolumeNames(), []string{"data"}) {
+		t.Errorf("volume claims = %v / %v, want just [data]", detail.VolumeNames(), detail.ActiveVolumeNames())
+	}
+	if detail.Mounts[1].Type != "DiskImage" {
+		t.Errorf("external disk was treated as a managed volume: %+v", detail.Mounts[1])
+	}
+}
+
 func TestClientCreate_InvokesMsbCreate(t *testing.T) {
 	r := &fakeRunner{}
 	c := NewClient("msb", r)
@@ -97,42 +125,23 @@ func TestClientCreate_WithSSHKeys(t *testing.T) {
 			len(calls), calls)
 	}
 
-	// 1) create … --script-raw install-ssh-keys=<body>
-	createArgs := calls[0]
-	scriptIdx := -1
-	for i, a := range createArgs {
-		if a == "--script-raw" {
-			scriptIdx = i
-			break
-		}
+	wantCreate := []string{"create", "-n", "x", "--", "alpine"}
+	if !reflect.DeepEqual(calls[0], wantCreate) {
+		t.Errorf("first invocation = %v, want %v", calls[0], wantCreate)
 	}
-	if scriptIdx < 0 {
-		t.Fatalf("--script-raw not in create args: %v", createArgs)
+	wantExec := []string{"exec", "--no-stdin", "x", "--", "/bin/sh", "-c"}
+	if len(calls[1]) != len(wantExec)+1 || !slices.Equal(calls[1][:len(wantExec)], wantExec) {
+		t.Fatalf("second invocation = %v, want %v followed by the SSH script", calls[1], wantExec)
 	}
-	flagVal := createArgs[scriptIdx+1]
-	const namePrefix = "install-ssh-keys="
-	if !strings.HasPrefix(flagVal, namePrefix) {
-		t.Errorf("--script-raw value = %q, want prefix %q", flagVal, namePrefix)
-	}
-	body := strings.TrimPrefix(flagVal, namePrefix)
-	// --script-raw skips shebang insertion; we must add our own.
-	if !strings.HasPrefix(body, "#!/bin/sh\n") {
-		t.Errorf("script body missing #!/bin/sh shebang: %s", body)
-	}
+	body := calls[1][len(wantExec)]
 	if !strings.Contains(body, "/root/.ssh/authorized_keys") {
 		t.Errorf("script body does not target authorized_keys: %s", body)
 	}
-	for _, k := range keys {
-		quoted := "'" + strings.ReplaceAll(k, "'", `'\''`) + "'"
+	for _, key := range keys {
+		quoted := "'" + strings.ReplaceAll(key, "'", `'\''`) + "'"
 		if !strings.Contains(body, quoted) {
-			t.Errorf("body missing quoted key %q", k)
+			t.Errorf("body missing quoted key %q", key)
 		}
-	}
-
-	// 2) exec x -- install-ssh-keys (the -- terminates msb's flag parsing)
-	wantExec := []string{"exec", "x", "--", "install-ssh-keys"}
-	if !reflect.DeepEqual(calls[1], wantExec) {
-		t.Errorf("second invocation = %v, want %v", calls[1], wantExec)
 	}
 }
 
@@ -203,7 +212,7 @@ type ctxRecordingRunner struct {
 	idx     int
 }
 
-func (r *ctxRecordingRunner) Run(ctx context.Context, _ string, args ...string) ([]byte, []byte, error) {
+func (r *ctxRecordingRunner) Run(ctx context.Context, _ []string, _ string, args ...string) ([]byte, []byte, error) {
 	r.calls = append(r.calls, append([]string(nil), args...))
 	r.ctxErrs = append(r.ctxErrs, ctx.Err())
 	var err error
@@ -215,91 +224,134 @@ func (r *ctxRecordingRunner) Run(ctx context.Context, _ string, args ...string) 
 }
 
 type recordingRunner struct {
-	calls *[][]string
-	errs  []error // optional: per-call exit errors
-	idx   int
+	calls   *[][]string
+	errs    []error // optional: per-call exit errors
+	outputs [][]byte
+	idx     int
 }
 
-func (rr *recordingRunner) Run(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+func (rr *recordingRunner) Run(_ context.Context, _ []string, _ string, args ...string) ([]byte, []byte, error) {
 	*rr.calls = append(*rr.calls, append([]string(nil), args...))
 	var err error
 	if rr.idx < len(rr.errs) {
 		err = rr.errs[rr.idx]
 	}
+	var stdout []byte
+	if rr.idx < len(rr.outputs) {
+		stdout = rr.outputs[rr.idx]
+	}
 	rr.idx++
-	return nil, nil, err
+	return stdout, nil, err
 }
 
 // Spec→msb-args translation, the high-value pure-function seam called out in
 // CLAUDE.md. Args order: -n NAME, optionals (-c, -m, -v, -e, -p), IMAGE last.
 // Env is sorted by key for determinism (matters for testing and reproducible
 // audit logs; msb itself is order-insensitive).
-// When Snapshot is set, we dispatch to `msb run -d --snapshot <name>` instead
-// of `msb create` (msb v0.5.2 only accepts --snapshot on run). The remaining
-// optional flags are emitted the same way; there is no trailing positional
-// IMAGE (the snapshot pins it).
-func TestClientCreate_FromSnapshot_DispatchesToMsbRun(t *testing.T) {
-	r := &fakeRunner{}
+func TestClientCreate_FromSnapshotRestoresAndSetsEnvironment(t *testing.T) {
+	var calls [][]string
+	r := &recordingRunner{
+		calls: &calls,
+		outputs: [][]byte{
+			[]byte(`[{"name":"probe-snap","reference":"/var/lib/msb/snapshots/probe-snap/snap_example"}]`),
+			[]byte(`[{"name":"myvol","kind":"disk","capacity_bytes":1073741824}]`),
+			[]byte(`{"volumes":{"items":[{"name":"myvol","path":"/var/lib/msb/volumes/myvol"}]}}`),
+		},
+	}
 	c := NewClient("msb", r)
-
-	if err := c.Create(context.Background(), CreateOpts{
+	err := c.Create(context.Background(), CreateOpts{
 		Name: "derived", Snapshot: "probe-snap",
 		CPUs: 2, MemoryMiB: 512,
 		Volume: &VolumeMount{Name: "myvol", Mount: "/workspace"},
-	}); err != nil {
+		Env:    map[string]string{"FOO": "bar"},
+		Ports:  []PortMapping{{Host: 8080, Guest: 80}},
+	})
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	wantArgs := []string{
-		"run", "-d",
-		"--snapshot", "probe-snap",
-		"-n", "derived",
-		"-c", "2",
-		"-m", "512",
-		"-v", "myvol:/workspace",
+	want := [][]string{
+		{"snapshot", "ls", "--format", "json"},
+		{"volume", "ls", "--format", "json"},
+		{"df", "--format", "json"},
+		{"restore", "--disk-only", "--allow-missing-resources", "-n", "derived",
+			"-c", "2", "-m", "512", "--mount-disk", "/var/lib/msb/volumes/myvol/disk.raw:/workspace:format=raw,fstype=ext4",
+			"-p", "8080:80", "--", "/var/lib/msb/snapshots/probe-snap/snap_example"},
+		{"modify", "-e", "FOO=bar", "--", "derived"},
 	}
-	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
-		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
+	if !reflect.DeepEqual(calls, want) {
+		t.Errorf("invocations = %v, want %v", calls, want)
 	}
 }
 
-func TestClientCreate_FullOpts(t *testing.T) {
-	r := &fakeRunner{}
-	c := NewClient("msb", r)
+type runnerFunc func(context.Context, []string, string, ...string) ([]byte, []byte, error)
 
+func (run runnerFunc) Run(ctx context.Context, env []string, name string, args ...string) ([]byte, []byte, error) {
+	return run(ctx, env, name, args...)
+}
+
+func TestClientCreate_FullOpts(t *testing.T) {
+	var configPath string
+	c := NewClient("msb", runnerFunc(func(_ context.Context, env []string, _ string, args ...string) ([]byte, []byte, error) {
+		if slices.Equal(args, []string{"volume", "ls", "--format", "json"}) {
+			return []byte(`[{"name":"myvol","kind":"disk","capacity_bytes":1073741824}]`), nil, nil
+		}
+		i := slices.Index(args, "--conf")
+		if i < 0 || i+1 >= len(args) {
+			t.Fatalf("missing secret config in %v", args)
+		}
+		configPath = args[i+1]
+		wantArgs := []string{
+			"create", "-n", "voltest", "-e", "FOO=bar", "-e", "PATH=/usr/bin",
+			"--conf", configPath, "-c", "2", "-m", "512", "--mount-named", "myvol:/workspace:kind=disk,size=1024",
+			"-p", "8080:80", "-p", "9090:90", "--", "alpine",
+		}
+		if !slices.Equal(args, wantArgs) {
+			t.Errorf("invoked args = %v, want %v", args, wantArgs)
+		}
+		info, err := os.Stat(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Errorf("secret config mode = %o, want 0600", info.Mode().Perm())
+		}
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var config struct {
+			Secrets map[string]struct {
+				Value string
+				Allow []string
+			}
+		}
+		if err := json.Unmarshal(data, &config); err != nil {
+			t.Fatal(err)
+		}
+		token := config.Secrets["GITHUB_TOKEN"]
+		if token.Value != "ghp_@${MSB_MANAGER_LITERAL_DOLLAR}{PATH}" ||
+			!slices.Equal(token.Allow, []string{"github.com"}) {
+			t.Errorf("unexpected secret config entry: %+v", token)
+		}
+		wantEnv := []string{"MSB_MANAGER_LITERAL_DOLLAR=$"}
+		if !slices.Equal(env, wantEnv) {
+			t.Errorf("unexpected child environment: %v", env)
+		}
+		return nil, nil, nil
+	}))
 	opts := CreateOpts{
-		Name:      "voltest",
-		Image:     "alpine",
-		CPUs:      2,
-		MemoryMiB: 512,
-		Volume:    &VolumeMount{Name: "myvol", Mount: "/workspace"},
-		Env:       map[string]string{"FOO": "bar", "PATH": "/usr/bin"},
-		Ports:     []PortMapping{{Host: 8080, Guest: 80}, {Host: 9090, Guest: 90}},
-		Secrets: []Secret{
-			{Key: "GITHUB_TOKEN", Value: "ghp_x", Host: "github.com"},
-			{Key: "OPENAI_KEY", Value: "sk-y", Host: "api.openai.com"},
-		},
+		Name: "voltest", Image: "alpine", CPUs: 2, MemoryMiB: 512,
+		Volume:  &VolumeMount{Name: "myvol", Mount: "/workspace"},
+		Env:     map[string]string{"FOO": "bar", "PATH": "/usr/bin"},
+		Ports:   []PortMapping{{Host: 8080, Guest: 80}, {Host: 9090, Guest: 90}},
+		Secrets: []Secret{{Key: "GITHUB_TOKEN", Value: "ghp_@${PATH}", Host: "github.com"}},
 	}
 	if err := c.Create(context.Background(), opts); err != nil {
-		t.Fatalf("Create: unexpected error: %v", err)
+		t.Fatal(err)
 	}
-
-	wantArgs := []string{
-		"create",
-		"-n", "voltest",
-		"-c", "2",
-		"-m", "512",
-		"-v", "myvol:/workspace",
-		"-e", "FOO=bar",
-		"-e", "PATH=/usr/bin",
-		"-p", "8080:80",
-		"-p", "9090:90",
-		"--secret", "GITHUB_TOKEN=ghp_x@github.com",
-		"--secret", "OPENAI_KEY=sk-y@api.openai.com",
-		"--", "alpine",
-	}
-	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
-		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("secret config still exists after create: %v", err)
 	}
 }
 
@@ -346,10 +398,10 @@ func TestClientVolumeCreate_InvokesMsbVolumeCreate(t *testing.T) {
 	r := &fakeRunner{}
 	c := NewClient("msb", r)
 
-	if err := c.VolumeCreate(context.Background(), "myvol", "1G"); err != nil {
+	if err := c.VolumeCreate(context.Background(), "myvol", "1GiB"); err != nil {
 		t.Fatalf("VolumeCreate: unexpected error: %v", err)
 	}
-	wantArgs := []string{"volume", "create", "--size", "1G", "--", "myvol"}
+	wantArgs := []string{"volume", "create", "--kind", "disk", "--size", "1024", "--", "myvol"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
 	}
@@ -381,7 +433,11 @@ func TestClientSnapshotList_InvokesMsbSnapshotLsJSON(t *testing.T) {
 }
 
 func TestClientSnapshotCreate_InvokesWithSortedLabels(t *testing.T) {
-	r := &fakeRunner{}
+	var calls [][]string
+	r := &recordingRunner{
+		calls:   &calls,
+		outputs: [][]byte{[]byte(`[]`), []byte(`{"status":"Stopped"}`)},
+	}
 	c := NewClient("msb", r)
 	if err := c.SnapshotCreate(context.Background(), "probe", "probe-snap",
 		map[string]string{"team": "ops", "msb.parent": "test"}, false); err != nil {
@@ -391,30 +447,30 @@ func TestClientSnapshotCreate_InvokesWithSortedLabels(t *testing.T) {
 	// is the trailing positional (msb's grammar, not a flag).
 	wantArgs := []string{
 		"snapshot", "create",
-		"--from", "probe",
+		"--sandbox", "probe", "--group", "probe-snap",
 		"--label", "msb.parent=test",
 		"--label", "team=ops",
 		"--", "probe-snap",
 	}
-	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
-		t.Errorf("invoked args =\n  %v\nwant\n  %v", r.gotArgs, wantArgs)
+	if len(calls) != 3 || !slices.Equal(calls[2], wantArgs) {
+		t.Errorf("invocations = %v, want list, inspect, and %v", calls, wantArgs)
 	}
 }
 
-func TestClientSnapshotCreate_ForceAddsFlag(t *testing.T) {
-	r := &fakeRunner{}
+func TestClientSnapshotCreate_ForceCannotOverwriteInstalledSnapshot(t *testing.T) {
+	r := &fakeRunner{stdout: []byte(`[{"name":"probe-snap","reference":"snap-example"}]`)}
 	c := NewClient("msb", r)
-	if err := c.SnapshotCreate(context.Background(), "probe", "probe-snap", nil, true); err != nil {
-		t.Fatalf("SnapshotCreate: %v", err)
+	err := c.SnapshotCreate(context.Background(), "probe", "probe-snap", nil, true)
+	if !errors.Is(err, ErrSnapshotAlreadyExists) {
+		t.Fatalf("SnapshotCreate: got %v, want ErrSnapshotAlreadyExists", err)
 	}
-	wantArgs := []string{"snapshot", "create", "--from", "probe", "--force", "--", "probe-snap"}
-	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
-		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	if want := []string{"snapshot", "ls", "--format", "json"}; !slices.Equal(r.gotArgs, want) {
+		t.Errorf("last invocation = %v, want %v", r.gotArgs, want)
 	}
 }
 
 func TestClientSnapshotRm_InvokesMsbSnapshotRm(t *testing.T) {
-	r := &fakeRunner{}
+	r := &fakeRunner{stdout: []byte(`[]`)}
 	c := NewClient("msb", r)
 	if err := c.SnapshotRm(context.Background(), "probe-snap"); err != nil {
 		t.Fatalf("SnapshotRm: %v", err)
@@ -422,6 +478,23 @@ func TestClientSnapshotRm_InvokesMsbSnapshotRm(t *testing.T) {
 	wantArgs := []string{"snapshot", "rm", "--", "probe-snap"}
 	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
 		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	}
+}
+
+func TestClientSnapshotRm_AmbiguousShortNameRequiresQualifiedReference(t *testing.T) {
+	r := &fakeRunner{stdout: []byte(`[{"name":"base","group":"one"},{"name":"base","group":"two"}]`)}
+	c := NewClient("msb", r)
+	if err := c.SnapshotRm(context.Background(), "base"); !errors.Is(err, ErrSnapshotAmbiguous) {
+		t.Fatalf("unqualified remove error = %v, want ErrSnapshotAmbiguous", err)
+	}
+	if !slices.Equal(r.gotArgs, []string{"snapshot", "ls", "--format", "json"}) {
+		t.Fatalf("unqualified delete reached msb: %v", r.gotArgs)
+	}
+	if err := c.SnapshotRm(context.Background(), "two:base"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"snapshot", "rm", "--", "two:base"}; !slices.Equal(r.gotArgs, want) {
+		t.Errorf("invoked args = %v, want %v", r.gotArgs, want)
 	}
 }
 
@@ -560,7 +633,7 @@ type concurrencyRunner struct {
 	onCall func()
 }
 
-func (cr *concurrencyRunner) Run(_ context.Context, _ string, _ ...string) ([]byte, []byte, error) {
+func (cr *concurrencyRunner) Run(_ context.Context, _ []string, _ string, _ ...string) ([]byte, []byte, error) {
 	cr.onCall()
 	return nil, nil, nil
 }
@@ -601,7 +674,7 @@ type blockingRunner struct {
 	started chan struct{} // closed-ish signal: receives once per call entry
 }
 
-func (b *blockingRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, []byte, error) {
+func (b *blockingRunner) Run(ctx context.Context, _ []string, _ string, _ ...string) ([]byte, []byte, error) {
 	if b.started != nil {
 		select {
 		case b.started <- struct{}{}:

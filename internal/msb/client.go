@@ -8,9 +8,11 @@ package msb
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,7 +30,7 @@ const DefaultCmdTimeout = 60 * time.Second
 // an os/exec-backed implementation. Returning stdout and stderr separately
 // lets the caller map msb's stderr text + non-zero exit into an HTTP status.
 type Runner interface {
-	Run(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
+	Run(ctx context.Context, env []string, name string, args ...string) (stdout, stderr []byte, err error)
 }
 
 // Client wraps the msb CLI. Safe for concurrent use.
@@ -62,19 +64,23 @@ func NewClientWithTimeout(bin string, runner Runner, timeout time.Duration) *Cli
 	return &Client{bin: bin, runner: runner, timeout: timeout}
 }
 
-// run is the single choke point for every msb invocation. It bounds the call
+// runWithEnv is the single choke point for every msb invocation. It bounds the call
 // with a per-invocation timeout so a wedged msb fails the one request (freeing
 // any mutex the caller holds) instead of hanging forever (issue #4). On the
 // timeout firing, exec.CommandContext kills the child; we surface ErrTimeout so
 // the HTTP layer maps it to 504 rather than 500.
-func (c *Client) run(ctx context.Context, args ...string) (stdout, stderr []byte, err error) {
+func (c *Client) runWithEnv(ctx context.Context, env []string, args ...string) (stdout, stderr []byte, err error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	stdout, stderr, err = c.runner.Run(ctx, c.bin, args...)
+	stdout, stderr, err = c.runner.Run(ctx, env, c.bin, args...)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return stdout, stderr, fmt.Errorf("%w after %s: %v", ErrTimeout, c.timeout, err)
 	}
 	return stdout, stderr, err
+}
+
+func (c *Client) run(ctx context.Context, args ...string) (stdout, stderr []byte, err error) {
+	return c.runWithEnv(ctx, nil, args...)
 }
 
 // List shells out to `msb ls --format json` and returns the summary view of
@@ -94,7 +100,14 @@ func (c *Client) Inspect(ctx context.Context, name string) (SandboxDetail, error
 	if err != nil {
 		return SandboxDetail{}, wrapRunErr(stderr, err)
 	}
-	return parseInspect(stdout)
+	detail, err := parseInspect(stdout)
+	if err != nil {
+		return SandboxDetail{}, err
+	}
+	if err := c.identifyDiskMounts(ctx, &detail); err != nil {
+		return SandboxDetail{}, err
+	}
+	return detail, nil
 }
 
 // wrapRunErr classifies msb's stderr into a typed sentinel where possible,
@@ -122,13 +135,13 @@ func wrapRunErr(stderr []byte, err error) error {
 type CreateOpts struct {
 	Name      string
 	Image     string            // mutually exclusive with Snapshot
-	Snapshot  string            // mutually exclusive with Image; dispatches to `msb run -d --snapshot`
+	Snapshot  string            // mutually exclusive with Image
 	CPUs      int               // 0 = unset, don't pass --cpus
 	MemoryMiB int               // 0 = unset, don't pass --memory
 	Volume    *VolumeMount      // nil = unset
 	Env       map[string]string // nil/empty = no -e flags
 	Ports     []PortMapping     // nil/empty = no -p flags
-	Secrets   []Secret          // nil/empty = no --secret flags
+	Secrets   []Secret          // egress credentials for image-based creates
 	SSHKeys   []string          // OpenSSH-format pubkey lines; installed via --script
 }
 
@@ -154,67 +167,81 @@ type Secret struct {
 	Host  string
 }
 
-// Create shells out to `msb create -n <name> [opts...] -- <image>`. msb creates
-// the sandbox and boots it in the background; a non-nil error here means the
-// create itself was rejected. Boot success is observable via Inspect.
-// sshKeyScriptName is the registered script name on PATH inside the guest
-// (msb's --script-raw places it at /.msb/scripts/<name>).
-const sshKeyScriptName = "install-ssh-keys"
-
+// Create boots a fresh image or restores a snapshot into a detached sandbox.
 func (c *Client) Create(ctx context.Context, opts CreateOpts) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	args := buildCreateArgs(opts)
-	if _, stderr, err := c.run(ctx, args...); err != nil {
-		// msb may echo the offending --secret argument (value inline) in its
-		// stderr; redact secret values before they're folded into the error and
-		// logged (issue #7). classifyError's prefixes don't contain secrets, so
-		// sentinel mapping is unaffected.
-		return wrapRunErr(redactSecrets(stderr, opts.Secrets), err)
-	}
-	// msb's --script REGISTERS scripts on PATH but doesn't auto-run them. The
-	// keys install body was registered by `create`; now run it via `exec` so
-	// authorized_keys actually lands. On failure roll back with `rm -f` so the
-	// caller sees atomic "either fully created or nothing" semantics.
-	if len(opts.SSHKeys) > 0 {
-		// `--` terminates msb's own flag parsing so the script name is taken
-		// as the command rather than as another flag.
-		_, stderr, err := c.run(ctx, "exec", opts.Name, "--", sshKeyScriptName)
+
+	var source string
+	var args, env []string
+	if opts.Snapshot != "" {
+		if len(opts.Secrets) > 0 {
+			return ErrRestoreSecretsUnsupported
+		}
+		var err error
+		source, err = c.resolveSnapshot(ctx, opts.Snapshot)
 		if err != nil {
-			// Roll back with a cancellation-independent context (review #3): if
-			// the client disconnected during exec, ctx is already cancelled and
-			// a ctx-bound cleanup would never start, orphaning the sandbox the
-			// caller was promised was "all or nothing". Detach, but still bound
-			// it via c.run's own timeout, and log (don't silently drop) a failed
-			// rollback so an orphan is at least visible.
-			if _, rbStderr, rbErr := c.run(context.WithoutCancel(ctx), "rm", "-f", "--", opts.Name); rbErr != nil {
-				slog.WarnContext(ctx, "ssh-key rollback failed; sandbox may be orphaned",
-					"sandbox", opts.Name, "err", wrapRunErr(rbStderr, rbErr).Error())
+			return err
+		}
+		// The spec supplies all external bindings. A restore may intentionally
+		// omit a source volume or mount a different one at a different path.
+		args = []string{"restore", "--disk-only", "--allow-missing-resources", "-n", opts.Name}
+	} else {
+		source = opts.Image
+		args = appendEnvArgs([]string{"create", "-n", opts.Name}, opts.Env)
+		if len(opts.Secrets) > 0 {
+			file, childEnv, err := writeSecretConfig(opts.Secrets)
+			if err != nil {
+				return err
 			}
-			return fmt.Errorf("install ssh keys after create: %w", wrapRunErr(stderr, err))
+			defer os.Remove(file)
+			args = append(args, "--conf", file)
+			env = childEnv
+		}
+	}
+
+	args, err := c.appendCreateResourceArgs(ctx, args, opts)
+	if err != nil {
+		return err
+	}
+	args = append(args, "--", source)
+	if _, stderr, err := c.runWithEnv(ctx, env, args...); err != nil {
+		if len(opts.Secrets) > 0 {
+			// CLI config diagnostics can quote secret values, including escaped
+			// forms. Preserve known error categories without logging details.
+			return wrapSecretConfigError(stderr, err)
+		}
+		return wrapRunErr(stderr, err)
+	}
+
+	if opts.Snapshot != "" && len(opts.Env) > 0 {
+		// restore has no --env. These values apply to future guest execs.
+		args := append(appendEnvArgs([]string{"modify"}, opts.Env), "--", opts.Name)
+		if _, stderr, err := c.run(ctx, args...); err != nil {
+			return c.rollbackCreate(ctx, opts.Name, "set environment after restore", wrapRunErr(stderr, err))
+		}
+	}
+	if len(opts.SSHKeys) > 0 {
+		_, stderr, err := c.run(ctx, "exec", "--no-stdin", opts.Name, "--", "/bin/sh", "-c", sshKeysScript(opts.SSHKeys))
+		if err != nil {
+			return c.rollbackCreate(ctx, opts.Name, "install ssh keys after create", wrapRunErr(stderr, err))
 		}
 	}
 	return nil
 }
 
-// buildCreateArgs is the pure spec→msb-args translation (CLAUDE.md's
-// highest-value test seam). Env entries are emitted in sorted key order so the
-// arg list is deterministic — handy for tests, audit logs, and reasoning.
-//
-// Two dispatch paths:
-//   - Image set     → `msb create -n <name> [opts...] -- <image>`
-//   - Snapshot set  → `msb run -d --snapshot <name> -n <name> [opts...]`
-//
-// msb v0.5.2 only accepts --snapshot on `run`, not `create`; -d (--detach)
-// gives `run` the same "boot in background, print name" semantics as create.
-// Validation (mutual exclusion of Image/Snapshot) lives in the spec layer.
-func buildCreateArgs(opts CreateOpts) []string {
-	var args []string
-	if opts.Snapshot != "" {
-		args = []string{"run", "-d", "--snapshot", opts.Snapshot, "-n", opts.Name}
-	} else {
-		args = []string{"create", "-n", opts.Name}
+func (c *Client) rollbackCreate(ctx context.Context, name, operation string, cause error) error {
+	// A disconnected caller must not cancel cleanup. c.run still bounds it.
+	_, stderr, err := c.run(context.WithoutCancel(ctx), "rm", "-f", "--", name)
+	if err = wrapRunErr(stderr, err); err != nil && !errors.Is(err, ErrSandboxNotFound) {
+		slog.WarnContext(ctx, "create rollback failed; sandbox may be orphaned",
+			"sandbox", name, "err", err.Error())
+		cause = errors.Join(cause, ErrSandboxRollbackFailed)
 	}
+	return fmt.Errorf("%s: %w", operation, cause)
+}
+
+func (c *Client) appendCreateResourceArgs(ctx context.Context, args []string, opts CreateOpts) ([]string, error) {
 	if opts.CPUs > 0 {
 		args = append(args, "-c", strconv.Itoa(opts.CPUs))
 	}
@@ -222,50 +249,62 @@ func buildCreateArgs(opts CreateOpts) []string {
 		args = append(args, "-m", strconv.Itoa(opts.MemoryMiB))
 	}
 	if opts.Volume != nil {
-		args = append(args, "-v", opts.Volume.Name+":"+opts.Volume.Mount)
-	}
-	for _, k := range sortedKeys(opts.Env) {
-		args = append(args, "-e", k+"="+opts.Env[k])
+		mountArgs, err := c.volumeMountArgs(ctx, *opts.Volume, opts.Snapshot != "")
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, mountArgs...)
 	}
 	for _, p := range opts.Ports {
 		args = append(args, "-p", strconv.Itoa(p.Host)+":"+strconv.Itoa(p.Guest))
 	}
-	for _, s := range opts.Secrets {
-		// ACCEPTED V1 RISK (issue #7): the secret value is inline in argv, so it
-		// is world-readable via /proc/<pid>/cmdline for the lifetime of the msb
-		// child. Bounded today — single host, msb-manager runs non-root, single
-		// trust domain (CONTEXT.md). Verified against msb v0.5.2: `--secret` only
-		// accepts ENV=VALUE@HOST inline — there is no --secret-file/env/stdin
-		// path to migrate to, so this stays an accepted risk until upstream adds
-		// one. The log-side leak is closed via redactSecrets below.
-		args = append(args, "--secret", s.Key+"="+s.Value+"@"+s.Host)
-	}
-	if len(opts.SSHKeys) > 0 {
-		// --script-raw (not --script) so msb does NOT decode \n/\t escapes;
-		// our printf format strings rely on staying literal. The trade-off is
-		// we must include our own shebang.
-		args = append(args, "--script-raw", sshKeyScriptName+"="+sshKeysScript(opts.SSHKeys))
-	}
-	// For the image path, IMAGE is the trailing positional, passed after `--`
-	// so an image string can never be parsed as a flag (issue #3 defence in
-	// depth; verified msb v0.5.2 accepts `--` once all flags precede it). For
-	// the snapshot path, msb run takes --snapshot in place of the image —
-	// nothing trails, so no terminator is needed.
-	if opts.Snapshot == "" {
-		args = append(args, "--", opts.Image)
+	return args, nil
+}
+
+func appendEnvArgs(args []string, env map[string]string) []string {
+	for _, key := range sortedKeys(env) {
+		args = append(args, "-e", key+"="+env[key])
 	}
 	return args
+}
+
+// writeSecretConfig keeps caller values off argv. msb expands ${...} in its
+// config, so escape each opening marker using a fixed child environment
+// variable. Replacement text is not re-expanded by msb. This prevents caller
+// values from referring to the manager's host environment.
+func writeSecretConfig(secrets []Secret) (string, []string, error) {
+	type secretEntry struct {
+		Value string   `json:"value"`
+		Allow []string `json:"allow"`
+	}
+	const dollarVar = "MSB_MANAGER_LITERAL_DOLLAR"
+	escape := strings.NewReplacer("${", "${"+dollarVar+"}{")
+	entries := make(map[string]secretEntry, len(secrets))
+	for _, secret := range secrets {
+		entries[secret.Key] = secretEntry{
+			Value: escape.Replace(secret.Value),
+			Allow: []string{escape.Replace(secret.Host)},
+		}
+	}
+	file, err := os.CreateTemp("", "msb-manager-secrets-*.json")
+	if err != nil {
+		return "", nil, fmt.Errorf("create msb secret config: %w", err)
+	}
+	writeErr := json.NewEncoder(file).Encode(map[string]any{"secrets": entries})
+	if err := errors.Join(writeErr, file.Close()); err != nil {
+		_ = os.Remove(file.Name())
+		return "", nil, fmt.Errorf("write msb secret config: %w", err)
+	}
+	return file.Name(), []string{dollarVar + "=$"}, nil
 }
 
 // sshKeysScript builds a POSIX shell snippet that overwrites
 // /root/.ssh/authorized_keys with the given keys (one per line), at the
 // canonical 700/600 modes. Each key is single-quoted so an embedded comment
 // containing spaces, $vars, backticks, or single quotes can't escape the
-// string. Registered via --script-raw and executed post-create via
-// `msb exec <name> install-ssh-keys`.
+// string. Executed in the guest via `msb exec` after create or restore.
 func sshKeysScript(keys []string) string {
 	var sb strings.Builder
-	sb.WriteString("#!/bin/sh\n") // --script-raw doesn't insert one for us
 	sb.WriteString("set -eu\n")
 	sb.WriteString("mkdir -p /root/.ssh\n")
 	sb.WriteString("chmod 700 /root/.ssh\n")
@@ -285,23 +324,6 @@ func sshKeysScript(keys []string) string {
 // embed a literal ' inside a POSIX single-quoted string.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// redactSecrets replaces every non-empty secret value in s with a placeholder.
-// Used to scrub msb stderr before it's folded into an error and logged, so a
-// secret echoed back in an error message (issue #7) never reaches the logs.
-func redactSecrets(s []byte, secrets []Secret) []byte {
-	if len(secrets) == 0 {
-		return s
-	}
-	out := string(s)
-	for _, sec := range secrets {
-		if sec.Value == "" {
-			continue
-		}
-		out = strings.ReplaceAll(out, sec.Value, "***REDACTED***")
-	}
-	return []byte(out)
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -359,7 +381,7 @@ type ExecResult struct {
 	ExitCode int
 }
 
-// Exec shells out to `msb exec <name> -- <argv...>` and runs argv inside the
+// Exec shells out to `msb exec --no-stdin <name> -- <argv...>` and runs argv inside the
 // sandbox, request/response (no TTY, no streaming), bounded by the
 // per-invocation timeout. The `--` terminates msb's flag parsing so the guest
 // command — which may legitimately start with a dash — can never be parsed as
@@ -373,7 +395,16 @@ type ExecResult struct {
 func (c *Client) Exec(ctx context.Context, name string, argv []string) (ExecResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	args := append([]string{"exec", name, "--"}, argv...)
+	// Foreground msb exec can temporarily start a stopped sandbox. Require
+	// a running one so exec cannot bypass the server's volume claims.
+	detail, err := c.Inspect(ctx, name)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	if detail.Status != "Running" {
+		return ExecResult{}, ErrSandboxNotRunning
+	}
+	args := append([]string{"exec", "--no-stdin", name, "--"}, argv...)
 	stdout, stderr, err := c.run(ctx, args...)
 	return execOutcome(stdout, stderr, err)
 }
@@ -383,12 +414,6 @@ func (c *Client) Exec(ctx context.Context, name string, argv []string) (ExecResu
 // typed error for the HTTP layer). Order matters: timeout first (a killed
 // child also reports an exit status), then msb's recognised stderr
 // categories, then an exit code is attributed to the guest command.
-//
-// OPEN VERIFICATION (CONTEXT #4): this assumes `msb exec` propagates the
-// guest command's exit code as its own. If msb v0.5.2 instead always exits
-// 0 (or collapses to 1), unclassified msb-side failures would surface here
-// as command outcomes — the response still carries msb's stderr, so the
-// caller sees what happened either way. Verify on a real msb and tighten.
 func execOutcome(stdout, stderr []byte, err error) (ExecResult, error) {
 	if err == nil {
 		return ExecResult{Stdout: string(stdout), Stderr: string(stderr)}, nil
@@ -472,32 +497,72 @@ func (c *Client) SnapshotList(ctx context.Context) ([]Snapshot, error) {
 	return parseSnapshotList(stdout)
 }
 
-// SnapshotCreate shells out to:
-//
-//	msb snapshot create --from <from> [--label k=v ...] [--force] <dest>
-//
-// from must be a stopped sandbox; dest is the snapshot name. Labels are
-// emitted in sorted key order for deterministic args.
-func (c *Client) SnapshotCreate(ctx context.Context, from, dest string, labels map[string]string, force bool) error {
+// resolveSnapshot maps existing short names to the stable reference returned
+// by msb. Bare names now select group heads, and migrated artifacts may have
+// no group. Explicit group:member selectors and IDs also work.
+func (c *Client) resolveSnapshot(ctx context.Context, name string) (string, error) {
+	if strings.Contains(name, ":") {
+		return name, nil
+	}
+	rows, err := c.SnapshotList(ctx)
+	if err != nil {
+		return "", err
+	}
+	var matching *Snapshot
+	for i := range rows {
+		if rows[i].Name != name {
+			continue
+		}
+		if matching != nil {
+			return "", ErrSnapshotAmbiguous
+		}
+		matching = &rows[i]
+	}
+	if matching != nil && matching.Reference != "" {
+		return matching.Reference, nil
+	}
+	return name, nil
+}
+
+// SnapshotCreate puts each API-named snapshot in its own group. Installed
+// group members are immutable in msb, even when the request supplies force.
+func (c *Client) SnapshotCreate(ctx context.Context, from, dest string, labels map[string]string, _ bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	args := []string{"snapshot", "create", "--from", from}
+	rows, err := c.SnapshotList(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.Name == dest {
+			return ErrSnapshotAlreadyExists
+		}
+	}
+	detail, err := c.Inspect(ctx, from)
+	if err != nil {
+		return err
+	}
+	if detail.Status != "Stopped" {
+		return ErrSandboxStillRunning
+	}
+	args := []string{"snapshot", "create", "--sandbox", from, "--group", dest}
 	for _, k := range sortedKeys(labels) {
 		args = append(args, "--label", k+"="+labels[k])
-	}
-	if force {
-		args = append(args, "--force")
 	}
 	args = append(args, "--", dest)
 	_, stderr, err := c.run(ctx, args...)
 	return wrapRunErr(stderr, err)
 }
 
-// SnapshotRm shells out to `msb snapshot rm <name>`.
+// SnapshotRm removes the referenced snapshot.
 func (c *Client) SnapshotRm(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.run(ctx, "snapshot", "rm", "--", name)
+	reference, err := c.resolveSnapshot(ctx, name)
+	if err != nil {
+		return err
+	}
+	_, stderr, err := c.run(ctx, "snapshot", "rm", "--", reference)
 	return wrapRunErr(stderr, err)
 }
 
@@ -511,12 +576,15 @@ func (c *Client) VolumeList(ctx context.Context) ([]Volume, error) {
 	return parseVolumeList(stdout)
 }
 
-// VolumeCreate shells out to `msb volume create --size <size> <name>`. size is
-// passed through verbatim (e.g. "1G", "512M") — msb owns the unit grammar.
+// VolumeCreate provisions a disk volume with a capacity in whole MiB.
 func (c *Client) VolumeCreate(ctx context.Context, name, size string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, stderr, err := c.run(ctx, "volume", "create", "--size", size, "--", name)
+	mib, err := ParseSizeMiB(size)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidVolumeSize, err)
+	}
+	_, stderr, err := c.run(ctx, "volume", "create", "--kind", "disk", "--size", strconv.Itoa(mib), "--", name)
 	return wrapRunErr(stderr, err)
 }
 
