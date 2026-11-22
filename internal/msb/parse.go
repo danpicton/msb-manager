@@ -27,9 +27,19 @@ func parseSnapshotList(data []byte) ([]Snapshot, error) {
 
 // parseVolumeList decodes `msb volume ls --format json` output.
 func parseVolumeList(data []byte) ([]Volume, error) {
-	var out []Volume
-	if err := json.Unmarshal(data, &out); err != nil {
+	var rows []struct {
+		Volume
+		CapacityBytes int64 `json:"capacity_bytes"`
+	}
+	if err := json.Unmarshal(data, &rows); err != nil {
 		return nil, fmt.Errorf("parse msb volume ls: %w", err)
+	}
+	out := make([]Volume, len(rows))
+	for i, row := range rows {
+		out[i] = row.Volume
+		if row.CapacityBytes > 0 {
+			out[i].QuotaMiB = int(row.CapacityBytes / (1 << 20))
+		}
 	}
 	return out, nil
 }
@@ -63,28 +73,57 @@ func parseList(data []byte) ([]Sandbox, error) {
 // secrets block unparsed makes the leak impossible at the type level. See
 // TestParseInspect_DoesNotLeakSecretValue for the regression guard.
 type inspectDTO struct {
-	Name      string `json:"name"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-	Config    struct {
-		CPUs      int        `json:"cpus"`
-		MemoryMiB int        `json:"memory_mib"`
-		Workdir   string     `json:"workdir"`
-		Env       [][]string `json:"env"`
-		// image is a Rust-style tagged enum: {"Oci": {"reference": ...}}.
-		// One key (the variant); we read its reference.
-		Image map[string]struct {
-			Reference string `json:"reference"`
-		} `json:"image"`
-		Mounts []struct {
-			Guest    string `json:"guest"`
-			ReadOnly bool   `json:"readonly"`
-			SizeMiB  int    `json:"size_mib"`
-			Type     string `json:"type"`
-			Name     string `json:"name"`
-		} `json:"mounts"`
-	} `json:"config"`
+	Name         string        `json:"name"`
+	Status       string        `json:"status"`
+	CreatedAt    string        `json:"created_at"`
+	UpdatedAt    string        `json:"updated_at"`
+	Config       inspectConfig `json:"config"`
+	ActiveConfig *struct {
+		Mounts []inspectMount `json:"mounts"`
+	} `json:"active_config"`
+}
+
+type inspectResources struct {
+	CPUs      int `json:"cpus"`
+	MemoryMiB int `json:"memory_mib"`
+}
+
+type inspectConfig struct {
+	inspectResources                   // older, flat config
+	Resources        *inspectResources `json:"resources"`
+	Workdir          string            `json:"workdir"`
+	Runtime          *struct {
+		Workdir string `json:"workdir"`
+	} `json:"runtime"`
+	Env []json.RawMessage `json:"env"`
+	// image is a tagged enum, such as {"Oci": {"reference": "alpine"}}.
+	Image map[string]struct {
+		Reference string `json:"reference"`
+	} `json:"image"`
+	Mounts []inspectMount `json:"mounts"`
+}
+
+type inspectMount struct {
+	Mount
+	Host    string `json:"host"`
+	Options *struct {
+		ReadOnly bool `json:"readonly"`
+	} `json:"options"`
+}
+
+func inspectMounts(rows []inspectMount) []Mount {
+	var mounts []Mount
+	for _, row := range rows {
+		mount := row.Mount
+		if row.Options != nil {
+			mount.ReadOnly = row.Options.ReadOnly
+		}
+		if mount.Type == "DiskImage" {
+			mount.DiskPath = row.Host
+		}
+		mounts = append(mounts, mount)
+	}
+	return mounts
 }
 
 // parseInspect decodes `msb inspect --format json` output, flattening msb's
@@ -104,25 +143,41 @@ func parseInspect(data []byte) (SandboxDetail, error) {
 		MemoryMiB: dto.Config.MemoryMiB,
 		Workdir:   dto.Config.Workdir,
 		Image:     imageReference(dto.Config.Image),
+		Mounts:    inspectMounts(dto.Config.Mounts),
+	}
+	if dto.Config.Resources != nil {
+		d.CPUs = dto.Config.Resources.CPUs
+		d.MemoryMiB = dto.Config.Resources.MemoryMiB
+	}
+	if dto.Config.Runtime != nil {
+		d.Workdir = dto.Config.Runtime.Workdir
+	}
+	if dto.ActiveConfig != nil {
+		mounts := inspectMounts(dto.ActiveConfig.Mounts)
+		d.ActiveMounts = &mounts
 	}
 
 	if len(dto.Config.Env) > 0 {
 		d.Env = make(map[string]string, len(dto.Config.Env))
-		for _, kv := range dto.Config.Env {
-			if len(kv) == 2 {
-				d.Env[kv[0]] = kv[1]
+		for _, raw := range dto.Config.Env {
+			if raw[0] == '[' {
+				var pair []string
+				if err := json.Unmarshal(raw, &pair); err != nil {
+					return SandboxDetail{}, fmt.Errorf("parse msb inspect env: %w", err)
+				}
+				if len(pair) == 2 {
+					d.Env[pair[0]] = pair[1]
+				}
+				continue
+			}
+			var entry struct{ Key, Value string }
+			if err := json.Unmarshal(raw, &entry); err != nil {
+				return SandboxDetail{}, fmt.Errorf("parse msb inspect env: %w", err)
+			}
+			if entry.Key != "" {
+				d.Env[entry.Key] = entry.Value
 			}
 		}
-	}
-
-	for _, m := range dto.Config.Mounts {
-		d.Mounts = append(d.Mounts, Mount{
-			Guest:    m.Guest,
-			Type:     m.Type,
-			ReadOnly: m.ReadOnly,
-			SizeMiB:  m.SizeMiB,
-			Name:     m.Name,
-		})
 	}
 
 	return d, nil

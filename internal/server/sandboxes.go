@@ -79,7 +79,9 @@ func handleCreateSandbox(client MsbClient, vlock *lock.VolumeLock) http.HandlerF
 			return
 		}
 		if err := client.Create(r.Context(), s.ToCreateOpts()); err != nil {
-			vlock.ReleaseVolumes(newlyClaimed, s.Name)
+			if !errors.Is(err, msb.ErrSandboxRollbackFailed) {
+				vlock.ReleaseVolumes(newlyClaimed, s.Name)
+			}
 			writeAdapterError(w, r, "create sandbox", err)
 			return
 		}
@@ -198,14 +200,24 @@ func statusForAdapterError(op string, err error) (int, string) {
 		return http.StatusConflict, "sandbox already exists"
 	case errors.Is(err, msb.ErrSandboxStillRunning):
 		return http.StatusConflict, "sandbox is still running"
+	case errors.Is(err, msb.ErrSandboxNotRunning):
+		return http.StatusConflict, "sandbox is not running"
 	case errors.Is(err, msb.ErrVolumeAlreadyExists):
 		return http.StatusConflict, "volume already exists"
 	case errors.Is(err, msb.ErrVolumeNotFound):
 		return http.StatusNotFound, "volume not found"
+	case errors.Is(err, msb.ErrVolumeInUse):
+		return http.StatusConflict, "volume is in use"
+	case errors.Is(err, msb.ErrInvalidVolumeSize):
+		return http.StatusBadRequest, "invalid volume size"
 	case errors.Is(err, msb.ErrSnapshotAlreadyExists):
 		return http.StatusConflict, "snapshot already exists"
 	case errors.Is(err, msb.ErrSnapshotNotFound):
 		return http.StatusNotFound, "snapshot not found"
+	case errors.Is(err, msb.ErrSnapshotAmbiguous):
+		return http.StatusConflict, "snapshot name is ambiguous, use a group:member reference or snapshot ID"
+	case errors.Is(err, msb.ErrRestoreSecretsUnsupported):
+		return http.StatusBadRequest, "snapshot restore does not accept egress secrets"
 	case errors.Is(err, msb.ErrTimeout):
 		// A wedged msb call hit its bound (issue #4); surface it as an upstream
 		// timeout, not a generic 500.

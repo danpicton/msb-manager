@@ -49,8 +49,7 @@ type PortMapping struct {
 }
 
 // Secret is an egress credential: Key/Value injected as an env var inside the
-// sandbox, only released for outbound traffic destined for Host. Maps to msb's
-// `--secret KEY=VALUE@HOST` flag.
+// sandbox, only released for outbound traffic destined for Host.
 type Secret struct {
 	Key   string `yaml:"key" json:"key"`
 	Value string `yaml:"value" json:"value"`
@@ -113,8 +112,11 @@ func (s Spec) Validate() error {
 	if s.Image != "" && !msb.ValidImage(s.Image) {
 		return fmt.Errorf("spec: image %q is not a valid reference (no leading '-', no whitespace)", s.Image)
 	}
-	if s.Snapshot != "" && !msb.ValidName(s.Snapshot) {
-		return fmt.Errorf("spec: snapshot %q is not a valid identifier", s.Snapshot)
+	if s.Snapshot != "" && !msb.ValidSnapshotRef(s.Snapshot) {
+		return fmt.Errorf("spec: snapshot %q is not a valid snapshot reference", s.Snapshot)
+	}
+	if s.Snapshot != "" && len(s.Secrets) > 0 {
+		return fmt.Errorf("spec: %w", msb.ErrRestoreSecretsUnsupported)
 	}
 	if s.CPUs < 0 {
 		return fmt.Errorf("spec: cpus must be >= 0, got %d", s.CPUs)
@@ -174,28 +176,11 @@ func (s Spec) Validate() error {
 		if sec.Host == "" {
 			return fmt.Errorf("spec: secrets[%d].host is required", i)
 		}
-		// The key leads the assembled `--secret KEY=VALUE@HOST` argv token; a
-		// leading '-' would make the whole token flag-shaped to msb's parser
-		// (issues #3, #23).
-		if strings.HasPrefix(sec.Key, "-") {
-			return fmt.Errorf("spec: secrets[%d].key must not start with '-'", i)
-		}
-		// '=' / '@' inside key or '@' inside host would make the assembled
-		// "KEY=VALUE@HOST" string unparseable by msb. Refuse them here so we
-		// fail with a precise message rather than handing msb a bad arg.
-		if strings.ContainsAny(sec.Key, "=@") {
-			return fmt.Errorf("spec: secrets[%d].key must not contain '=' or '@'", i)
+		if strings.HasPrefix(sec.Key, "-") || strings.ContainsAny(sec.Key, "=@\x00") {
+			return fmt.Errorf("spec: secrets[%d].key must not start with '-' or contain '=', '@', or NUL", i)
 		}
 		if strings.Contains(sec.Host, "@") {
 			return fmt.Errorf("spec: secrets[%d].host must not contain '@'", i)
-		}
-		// FAIL-CLOSED (issue #22): which '@' msb v0.5.2 splits "VALUE@HOST" on
-		// is unverified, and the @HOST part is the egress allow-list — a
-		// first-'@' split would silently release the secret to a host derived
-		// from the value. Refuse '@' in values until upstream's split-at-last-
-		// '@' behaviour is verified (see CONTEXT.md "msb CLI surface").
-		if strings.Contains(sec.Value, "@") {
-			return fmt.Errorf("spec: secrets[%d].value must not contain '@' — it would make the assembled KEY=VALUE@HOST egress rule ambiguous", i)
 		}
 	}
 	return nil

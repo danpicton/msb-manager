@@ -92,6 +92,17 @@ func TestNewSnapshot_NullParentRoundTrips(t *testing.T) {
 	sameJSON(t, NewSnapshot(s), s)
 }
 
+func TestNewSnapshot_ExposesAUsableReference(t *testing.T) {
+	grouped := msb.Snapshot{Name: "base", Group: "web", ID: "snap_example", Reference: "/private/snap_example"}
+	if got := NewSnapshot(grouped).Reference; got != "web:base" {
+		t.Errorf("grouped reference = %q, want web:base", got)
+	}
+	grouped.Group = ""
+	if got := NewSnapshot(grouped).Reference; got != "snap_example" {
+		t.Errorf("ungrouped reference = %q, want snap_example", got)
+	}
+}
+
 func TestNewSnapshots_EmptyIsNonNilSlice(t *testing.T) {
 	got := NewSnapshots(nil)
 	if got == nil {

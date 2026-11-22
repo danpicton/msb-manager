@@ -74,6 +74,35 @@ func TestReconcileVolumesWithRetry_RetriesUntilSuccessAndSeedsLock(t *testing.T)
 	}
 }
 
+func TestReconcileVolumes_ClaimsActiveMountsAcrossLifecycleStates(t *testing.T) {
+	client := &fakeInspector{
+		listOut: []msb.Sandbox{
+			{Name: "starting", Status: "Starting"}, {Name: "paused", Status: "Paused"},
+			{Name: "draining", Status: "Draining"}, {Name: "stopped", Status: "Stopped"},
+		},
+		inspectOut: map[string]msb.SandboxDetail{
+			"starting": {Mounts: []msb.Mount{{Type: "Named", Name: "starting-data"}}},
+			"paused": {
+				Mounts:       []msb.Mount{{Type: "Named", Name: "next-boot"}},
+				ActiveMounts: &[]msb.Mount{{Type: "Named", Name: "paused-data"}},
+			},
+			"draining": {Mounts: []msb.Mount{{Type: "Named", Name: "draining-data"}}},
+		},
+	}
+	vlock := lock.New()
+	if err := reconcileVolumes(context.Background(), client, vlock); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"starting", "paused", "draining"} {
+		if holder, ok := vlock.Holder(name + "-data"); !ok || holder != name {
+			t.Errorf("%s-data: holder = %q, want %q", name, holder, name)
+		}
+	}
+	if holder, ok := vlock.Holder("next-boot"); ok {
+		t.Errorf("pending mount has an active claim from %q", holder)
+	}
+}
+
 // A shutdown signal during the retry loop must abort startup rather than spin
 // forever — the only exits are reconcile success or cancellation.
 func TestReconcileVolumesWithRetry_AbortsOnContextCancel(t *testing.T) {

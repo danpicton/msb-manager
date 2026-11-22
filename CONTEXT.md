@@ -73,6 +73,19 @@ v1 is a **single trust domain** — any valid bearer token has full access to ev
 - **Metrics scraping** (**Prometheus**): an optional `/metrics` exposition endpoint (msb-manager + `msb metrics` data). Distinct from logs — Prometheus pulls metrics, Loki ingests logs.
 - **Log streaming** (SSE `?follow`): explicitly **not wanted** — no human live-watching. Recorded only so it's clear it was considered and declined.
 
+## Supported microsandbox release
+
+The manager targets `msb` v0.7.16. The adapter reads both generations of
+sandbox inspection JSON. New sized volumes use disk capacity, and snapshot
+restores use explicit destination mounts and ports. Snapshot names resolve
+through the current catalog, including references for migrated artifacts.
+Installed snapshots are immutable.
+
+Image-based creates use a private temporary configuration for literal secrets.
+Microsandbox persists the values for future starts. Snapshot restore lacks a
+secret configuration option. Upstream `msb exec` propagates guest exit codes,
+and the deployment smoke test checks exit code 7.
+
 ## Open verifications (first build session)
 
 The stateless model rests on three unverified microsandbox behaviours. None block the design; each is a one-command check to do before building on it:

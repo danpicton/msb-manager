@@ -38,7 +38,7 @@ func ParseSizeMiB(s string) (int, error) {
 	if i == 0 {
 		return 0, fmt.Errorf("invalid size %q: no leading number", s)
 	}
-	n, err := strconv.Atoi(s[:i])
+	n, err := strconv.ParseUint(s[:i], 10, 32)
 	if err != nil {
 		return 0, fmt.Errorf("invalid size %q: %w", s, err)
 	}
@@ -46,5 +46,9 @@ func ParseSizeMiB(s string) (int, error) {
 	if !ok {
 		return 0, fmt.Errorf("invalid size %q: unsupported unit %q", s, s[i:])
 	}
-	return n * mult, nil
+	const maxMiB = 1<<32 - 1
+	if n == 0 || n > maxMiB/uint64(mult) {
+		return 0, fmt.Errorf("invalid size %q: must be between 1 and %d MiB", s, maxMiB)
+	}
+	return int(n * uint64(mult)), nil
 }

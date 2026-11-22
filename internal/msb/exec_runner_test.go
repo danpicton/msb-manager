@@ -15,7 +15,7 @@ import (
 
 func TestExecRunner_CapturesStdout(t *testing.T) {
 	r := ExecRunner{}
-	stdout, stderr, err := r.Run(context.Background(), "printf", "%s", "hello")
+	stdout, stderr, err := r.Run(context.Background(), nil, "printf", "%s", "hello")
 	if err != nil {
 		t.Fatalf("Run printf: unexpected error: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestExecRunner_CapturesStdout(t *testing.T) {
 
 func TestExecRunner_NonZeroExitReturnsError(t *testing.T) {
 	r := ExecRunner{}
-	_, _, err := r.Run(context.Background(), "false")
+	_, _, err := r.Run(context.Background(), nil, "false")
 	if err == nil {
 		t.Fatal("Run false: got nil error, want non-zero exit error")
 	}
@@ -44,7 +44,7 @@ func TestExecRunner_ContextCancellationKillsProcess(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, _, err := r.Run(ctx, "sleep", "30")
+	_, _, err := r.Run(ctx, nil, "sleep", "30")
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -60,7 +60,7 @@ func TestExecRunner_ContextCancellationKillsProcess(t *testing.T) {
 func TestExecRunner_CapturesStderr(t *testing.T) {
 	r := ExecRunner{}
 	// `sh -c` is portable; route a known string to stderr.
-	_, stderr, err := r.Run(context.Background(), "sh", "-c", "printf boom 1>&2")
+	_, stderr, err := r.Run(context.Background(), nil, "sh", "-c", "printf boom 1>&2")
 	if err != nil {
 		t.Fatalf("Run sh: unexpected error: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestExecRunner_CapturesStderr(t *testing.T) {
 // pipe) but stops storing, and surfaces ErrOutputTooLarge.
 func TestExecRunner_OverCapOutputIsBoundedError(t *testing.T) {
 	r := ExecRunner{MaxCaptureBytes: 1024}
-	stdout, _, err := r.Run(context.Background(), "sh", "-c", "head -c 4096 /dev/zero")
+	stdout, _, err := r.Run(context.Background(), nil, "sh", "-c", "head -c 4096 /dev/zero")
 	if !errors.Is(err, ErrOutputTooLarge) {
 		t.Fatalf("err = %v, want ErrOutputTooLarge", err)
 	}
@@ -89,7 +89,7 @@ func TestExecRunner_OverCapOutputIsBoundedError(t *testing.T) {
 
 func TestExecRunner_UnderCapIsUnchanged(t *testing.T) {
 	r := ExecRunner{MaxCaptureBytes: 1024}
-	stdout, _, err := r.Run(context.Background(), "printf", "%s", "hello")
+	stdout, _, err := r.Run(context.Background(), nil, "printf", "%s", "hello")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestExecRunner_UnderCapIsUnchanged(t *testing.T) {
 // The stderr stream is capped independently of stdout.
 func TestExecRunner_StderrCappedToo(t *testing.T) {
 	r := ExecRunner{MaxCaptureBytes: 1024}
-	_, stderr, err := r.Run(context.Background(), "sh", "-c", "head -c 4096 /dev/zero 1>&2")
+	_, stderr, err := r.Run(context.Background(), nil, "sh", "-c", "head -c 4096 /dev/zero 1>&2")
 	if !errors.Is(err, ErrOutputTooLarge) {
 		t.Fatalf("err = %v, want ErrOutputTooLarge", err)
 	}

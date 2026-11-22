@@ -14,8 +14,7 @@ import (
 // snapshotRequest is the create-snapshot body. `from` is the source sandbox
 // (must be stopped); `name` is the snapshot destination. Labels are arbitrary
 // key/value strings; the client owns whatever convention sits there (incl.
-// msb.parent for lineage). `force` overwrites an existing artifact of the
-// same name.
+// msb.parent for lineage). `force` is accepted for existing clients.
 type snapshotRequest struct {
 	From   string            `yaml:"from" json:"from"`
 	Name   string            `yaml:"name" json:"name"`
@@ -89,7 +88,8 @@ func handleCreateSnapshot(client MsbClient) http.HandlerFunc {
 func handleDeleteSnapshot(client MsbClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
-		if !validPathName(w, name) {
+		if !msb.ValidSnapshotRef(name) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid snapshot reference"})
 			return
 		}
 		if err := client.SnapshotRm(r.Context(), name); err != nil {

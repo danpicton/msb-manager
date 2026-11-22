@@ -42,8 +42,11 @@ type ExecRunner struct {
 // If either stream exceeds the capture cap, the captured prefixes are
 // returned with an error wrapping ErrOutputTooLarge — an over-cap invocation
 // is never reported as success, even if the child exited 0.
-func (r ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+func (r ExecRunner) Run(ctx context.Context, env []string, name string, args ...string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	if len(env) > 0 {
+		cmd.Env = append(cmd.Environ(), env...)
+	}
 	// exec.CommandContext's default Cancel sends os.Kill (SIGKILL) when ctx is
 	// done; WaitDelay bounds how long Wait then blocks on pending I/O before
 	// giving up, so a wedged child can't keep the bounded invocation alive past

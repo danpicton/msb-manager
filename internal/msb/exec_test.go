@@ -16,7 +16,11 @@ func (e exitCodeError) Error() string { return fmt.Sprintf("exit status %d", e.c
 func (e exitCodeError) ExitCode() int { return e.code }
 
 func TestClientExec_InvokesMsbExecWithTerminator(t *testing.T) {
-	r := &fakeRunner{stdout: []byte("hi\n")}
+	var calls [][]string
+	r := &recordingRunner{
+		calls:   &calls,
+		outputs: [][]byte{[]byte(`{"name":"web","status":"Running"}`), []byte("hi\n")},
+	}
 	c := NewClient("msb", r)
 
 	res, err := c.Exec(context.Background(), "web", []string{"sh", "-c", "echo hi"})
@@ -26,13 +30,22 @@ func TestClientExec_InvokesMsbExecWithTerminator(t *testing.T) {
 
 	// `--` terminates msb's own flag parsing so the guest command (which may
 	// legitimately start with a dash) can never be parsed as an msb flag.
-	wantArgs := []string{"exec", "web", "--", "sh", "-c", "echo hi"}
-	if !reflect.DeepEqual(r.gotArgs, wantArgs) {
-		t.Errorf("invoked args = %v, want %v", r.gotArgs, wantArgs)
+	wantArgs := []string{"exec", "--no-stdin", "web", "--", "sh", "-c", "echo hi"}
+	if len(calls) != 2 || !reflect.DeepEqual(calls[1], wantArgs) {
+		t.Errorf("invocations = %v, want inspect followed by %v", calls, wantArgs)
 	}
 	want := ExecResult{Stdout: "hi\n"}
 	if res != want {
 		t.Errorf("result = %+v, want %+v", res, want)
+	}
+}
+
+func TestClientExec_DoesNotBootStoppedSandbox(t *testing.T) {
+	r := &fakeRunner{stdout: []byte(`{"name":"web","status":"Stopped"}`)}
+	c := NewClient("msb", r)
+	_, err := c.Exec(context.Background(), "web", []string{"true"})
+	if !errors.Is(err, ErrSandboxNotRunning) || r.gotArgs[0] != "inspect" {
+		t.Fatalf("Exec got err %v after %v, want ErrSandboxNotRunning after inspect", err, r.gotArgs)
 	}
 }
 

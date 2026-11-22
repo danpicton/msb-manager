@@ -231,8 +231,7 @@ func handleDeleteVolume(client MsbClient, vlock *lock.VolumeLock) http.HandlerFu
 		if !validPathName(w, name) {
 			return
 		}
-		// msb itself will remove a volume out from under a running sandbox
-		// (verified msb v0.5.2). Refuse here when our lock shows it's in use.
+		// Refuse while the manager holds a claim, including during startup.
 		if holder, ok := vlock.Holder(name); ok {
 			writeJSON(w, http.StatusConflict, map[string]string{
 				"error": fmt.Sprintf("volume %q in use by running sandbox %q", name, holder),

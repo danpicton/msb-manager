@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -170,6 +171,54 @@ func TestParseVolumeList(t *testing.T) {
 	}
 	if v1.CreatedAt == "" || v2.CreatedAt == "" {
 		t.Error("CreatedAt missing")
+	}
+}
+
+func TestParseVolumeList_DiskCapacityAndLegacyQuota(t *testing.T) {
+	volumes, err := parseVolumeList([]byte(`[
+		{"name":"disk","kind":"disk","quota_mib":null,"capacity_bytes":1073741824},
+		{"name":"legacy","kind":"dir","quota_mib":512,"capacity_bytes":null},
+		{"name":"unlimited","kind":"dir","quota_mib":null,"capacity_bytes":null}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Volume{{Name: "disk", Kind: "disk", QuotaMiB: 1024}, {Name: "legacy", Kind: "dir", QuotaMiB: 512}, {Name: "unlimited", Kind: "dir"}}
+	if !slices.Equal(volumes, want) {
+		t.Errorf("volumes = %+v, want %+v", volumes, want)
+	}
+}
+
+func TestParseInspect_V0716(t *testing.T) {
+	const secret = "literal-secret-canary"
+	detail, err := parseInspect([]byte(`{
+		"name":"test", "status":"Paused",
+		"config":{
+			"image":{"Oci":{"reference":"alpine"}},
+			"resources":{"cpus":2,"memory_mib":512,"max_memory_mib":1024},
+			"runtime":{"workdir":"/workspace"},
+			"env":[{"key":"MODE","value":"dev"}],
+			"mounts":[{"type":"Named","name":"next","guest":"/workspace","options":{"readonly":true}}],
+			"network":{"secrets":{"secrets":[{"value":"` + secret + `"}]}}
+		},
+		"active_config":{"mounts":[{"type":"Named","name":"current","guest":"/workspace","options":{"readonly":false}}]}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.CPUs != 2 || detail.MemoryMiB != 512 || detail.Workdir != "/workspace" || detail.Env["MODE"] != "dev" || detail.Image != "alpine" {
+		t.Errorf("unexpected inspect fields: %+v", detail)
+	}
+	if len(detail.Mounts) != 1 || !detail.Mounts[0].ReadOnly || !slices.Equal(detail.VolumeNames(), []string{"next"}) ||
+		!slices.Equal(detail.ActiveVolumeNames(), []string{"current"}) {
+		t.Errorf("desired mounts = %v, active volumes = %v", detail.Mounts, detail.ActiveVolumeNames())
+	}
+	out, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(out, []byte(secret)) {
+		t.Fatal("parsed detail exposed the literal secret")
 	}
 }
 
